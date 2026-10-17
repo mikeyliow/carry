@@ -1,0 +1,15 @@
+{
+  "name": "carry",
+  "version": "1.0.0",
+  "description": "Product-engineering workflow for Claude Code, across one or more repos. Every code change becomes a checklist plan: a main quest the owner confirms and an independent verifier checks, or a side quest the agent approves itself. Each repo keeps its config, rules and open quests in .carry/; ~/.carry holds the machine settings and the agents' working files.",
+  "author": {
+    "name": "mikey"
+  },
+  "license": "MIT",
+  "keywords": [
+    "carry",
+    "spec-driven",
+    "multi-repo",
+    "verification"
+  ]
+}

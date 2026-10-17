@@ -1,0 +1,1520 @@
+#!/usr/bin/env bash
+set -o pipefail
+
+CLI="$(basename "$0")"
+SELF="$0"
+while [ -L "$SELF" ]; do
+  link="$(readlink "$SELF")"
+  case "$link" in /*) SELF="$link" ;; *) SELF="$(dirname "$SELF")/$link" ;; esac
+done
+PLUGIN_ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+HOME_DIR=".carry"
+CONFIG_NAME="$HOME_DIR/repo.toml"
+CARRY_HOME="${CARRY_HOME:-$HOME/.carry}"
+MCFG="$CARRY_HOME/config.toml"
+REG="$CARRY_HOME/repos.toml"
+TEMPLATES="$PLUGIN_ROOT/skills/mode/templates"
+ENTRY_SKILL="$PLUGIN_ROOT/skills/mode/SKILL.md"
+
+die() { printf '%s: %s\n' "$CLI" "$*" >&2; exit 1; }
+say() { printf '%s\n' "$*"; }
+
+usage() {
+  cat <<EOF
+$CLI - quests, builds, verifies and runs, one repo at a time, linked across repos. One quest = one repo = one branch.
+A quest in another repo is named <repo>:<slug>. Every command that takes a slug takes that form too.
+
+Repo
+  init                                    set up .carry/ in this git repo and register it
+  where                                   this repo, its carry files, the machine files
+  repos                                   registered repos and remembered skips
+  scan <dir> [dir...]                     per dir: setup <name>, skipped, new or not-git
+  skip <dir>                              remember: do not offer setup for this repo again
+  throw [--skips | --all] [--yes]         remove carry's files: this repo's, the skips, or the machine's
+  doctor                                  check tools and config
+
+Quest
+  quest <slug> [--fix] [--side] [--uses <repo:slug,...>]
+  quest <slug> --continues <slug> [--fix] [--side]   a follow-up on the same branch
+  lint <file | slug | slug/report> [...]  check a quest or report against its template
+  approve <slug> [--self]                 after the owner confirms: stamp the plan. --self: a side quest, no owner
+  status [slug] [--line]                  this repo's quests with a progress bar, or one quest's next step. --line: one line, for the per-turn hook; --stdin: read the Claude Code status-line JSON for the directory
+  log <slug> <line> [line] [line]         append to the quest log
+  sync <slug>                             rebase the branch on the latest base, say if the patch changed
+  done <slug> [pr-url]                    the PR is open: mark done
+  drop <slug>                             the owner dropped it: delete its worktree, branch, sandboxes and quest
+  reopen <slug> "<why>"                   the owner changed direction mid-build: stop its agents, keep the branch, back to draft
+  tidy                                    clean merged quests: worktree, branch, sandboxes, quest; list the rest
+
+Build and verify
+  prep <slug> [--as verify] [--base B] [--no-seed]   worktree + sandbox
+  spawn <build|verify> <slug> [--round N] [--bg]
+  wait <slug>                             wait for background spawns
+  up <slug> [--as verify] [--review]      start the repo's run command in its sandbox
+  exec <slug> <key> [--as verify]         run a configured command (check, lint, logs)
+  review <slug>                           this quest and every quest it uses up on review ports, plus the diff
+  down <slug> [--as verify | --all]       stop servers, drop databases
+  diff <slug>                             what this quest changed
+
+CARRY_DRY_RUN=1 prints spawn commands instead of running them.
+EOF
+}
+
+abspath() { (cd "$1" 2>/dev/null && pwd -P); }
+
+expand() { case "$1" in /*) printf '%s' "$1" ;; "~"/*) printf '%s' "$HOME/${1#\~/}" ;; *) printf '%s' "$2/$1" ;; esac; }
+
+main_of() {
+  local c
+  c="$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || c="$(cd "$1" 2>/dev/null && cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)" || return 1
+  case "$c" in */.git) printf '%s' "${c%/.git}" ;; *) return 1 ;; esac
+}
+
+find_root() {
+  local d="${CARRY_REPO:-$PWD}" m
+  m="$(main_of "$d")" && [ -f "$m/$CONFIG_NAME" ] && { printf '%s\n' "$m"; return 0; }
+  while :; do
+    if [ -f "$d/$CONFIG_NAME" ]; then printf '%s\n' "$d"; return 0; fi
+    [ "$d" = "/" ] && return 1
+    d="$(dirname "$d")"
+  done
+}
+
+need_root() {
+  ROOT="$(find_root)" || die "no $CONFIG_NAME in $PWD or above it: '$CLI init' in the repo, or the setup skill"
+  ROOT="$(abspath "$ROOT")"
+  CFG="$ROOT/$CONFIG_NAME"
+  NAME="$(cfgd repo name "$(basename "$ROOT")")"
+  printf '%s' "$NAME" | grep -Eq '^[A-Za-z0-9._-]+$' || die "repo name '$NAME': use letters, digits, dots, hyphens and underscores. Set name under [repo] in $CFG"
+  QUESTS="$ROOT/$HOME_DIR/quests"
+  WTS="$(wt_base)/$NAME"
+  [ "$(reg_get "$NAME")" = "$ROOT" ] || reg_set "$NAME" "$ROOT"
+}
+
+cfg_in() {
+  [ -f "$1" ] || return 0
+  awk -v s="$2" -v k="$3" '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*\[/ { h=$0; gsub(/^[[:space:]]*\[|\][[:space:]]*$/, "", h); cur=h; next }
+    cur == s {
+      line=$0; sub(/^[[:space:]]+/, "", line)
+      n=index(line, "="); if (!n) next
+      key=substr(line, 1, n-1); gsub(/[[:space:]]+$/, "", key)
+      if (key != k) next
+      val=substr(line, n+1); sub(/^[[:space:]]+/, "", val)
+      if (val ~ /^\[/) {
+        sub(/\].*$/, "", val); gsub(/[\["]/, "", val); gsub(/,/, " ", val)
+        gsub(/[[:space:]]+/, " ", val); sub(/^ /, "", val); sub(/ $/, "", val)
+      } else if (val ~ /^"/) {
+        val=substr(val, 2); sub(/"[[:space:]]*(#.*)?$/, "", val)
+      } else {
+        sub(/[[:space:]]*#.*$/, "", val); sub(/[[:space:]]+$/, "", val)
+      }
+      print val; exit
+    }' "$1"
+}
+
+has_section() { [ -f "$1" ] && grep -q "^[[:space:]]*\[$2\][[:space:]]*$" "$1"; }
+
+cfg() {
+  local v
+  case "$1" in
+    carry) cfg_in "$MCFG" "$1" "$2"; return ;;
+    role.*) if has_section "$CFG" "$1"; then cfg_in "$CFG" "$1" "$2"; else cfg_in "$MCFG" "$1" "$2"; fi; return ;;
+  esac
+  v="$(cfg_in "$CFG" "$1" "$2")"; [ -n "$v" ] || v="$(cfg_in "$MCFG" "$1" "$2")"; printf '%s' "$v"
+}
+
+cfgd() { local v; v="$(cfg "$1" "$2")"; if [ -n "$v" ]; then printf '%s' "$v"; else printf '%s' "$3"; fi; }
+
+reg_init() { mkdir -p "$CARRY_HOME"; [ -f "$REG" ] || printf '# carry registry, written by the CLI: every repo set up, and repos the owner chose to skip.\n\n[repos]\n\n[skip]\n' > "$REG"; }
+
+reg_rows() {
+  [ -f "$REG" ] || return 0
+  awk -v s="[$1]" '/^\[/ { cur=$0; next } cur == s && /=/ {
+    n=index($0, "="); k=substr($0, 1, n-1); v=substr($0, n+1)
+    gsub(/^[[:space:]"]+|[[:space:]"]+$/, "", k); gsub(/^[[:space:]"]+|[[:space:]"]+$/, "", v); print k "\t" v }' "$REG"
+}
+
+reg_get() { reg_rows repos | awk -F'\t' -v k="$1" '$1 == k { print $2; exit }'; }
+
+reg_edit() {
+  local sect="$1" key="$2" val="$3" tmp
+  reg_init; tmp="$(mktemp)"
+  awk -v s="[$sect]" -v k="$key" -v v="$val" '
+    function out() { if (v != "") print "\"" k "\" = \"" v "\"" }
+    /^\[/ { if (cur == s && !done) { out(); done=1 } cur=$0; print; next }
+    cur == s && /=/ { n=index($0, "="); kk=substr($0, 1, n-1); gsub(/^[[:space:]"]+|[[:space:]"]+$/, "", kk); if (kk == k) { if (!done) out(); done=1; next } }
+    { print }
+    END { if (!done && v != "") { if (cur != s) print s; out() } }' "$REG" > "$tmp" && cat "$tmp" > "$REG"; rm -f "$tmp"
+}
+
+reg_set() {
+  local name="$1" path="$2" have
+  have="$(reg_get "$name")"
+  [ -z "$have" ] || [ "$have" = "$path" ] || [ ! -f "$have/$CONFIG_NAME" ] || die "the name '$name' is taken by $have. Set name = \"<other>\" under [repo] in $path/$CONFIG_NAME"
+  reg_edit repos "$name" "$path"
+  reg_edit skip "$path" ""
+}
+
+repo_path() {
+  [ "$1" = "$NAME" ] && { printf '%s' "$ROOT"; return; }
+  local p; p="$(reg_get "$1")"
+  [ -n "$p" ] || die "no repo '$1' in $REG: '$CLI init' in that repo, or the setup skill (have: $(reg_rows repos | cut -f1 | tr '\n' ' '))"
+  [ -f "$p/$CONFIG_NAME" ] || die "repo '$1' is registered at $p, but has no $CONFIG_NAME there"
+  printf '%s' "$p"
+}
+
+is_ref() { case "$1" in *:*) return 0 ;; *) return 1 ;; esac; }
+ddir() { if is_ref "$1" && [ "${1%%:*}" != "$NAME" ]; then printf '%s/%s/quests/%s' "$(repo_path "${1%%:*}")" "$HOME_DIR" "${1##*:}"; else printf '%s/%s' "$QUESTS" "${1##*:}"; fi; }
+
+rules_of() { expand "$(cfgd repo rules "$HOME_DIR/rules.md")" "$ROOT"; }
+
+valid_slug() { printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9-]*$' || die "slug '$1': use lowercase letters, digits and hyphens"; }
+
+quest_file() { local f="$QUESTS/$1/quest.md"; [ -f "$f" ] || die "no quest '$1' in $QUESTS"; printf '%s' "$f"; }
+
+wdir() { local r="$NAME" s="$1"; if is_ref "$1"; then r="${1%%:*}"; s="${1##*:}"; fi; printf '%s/work/%s/%s' "$CARRY_HOME" "$r" "$s"; }
+
+work_dir() { mkdir -p "$(wdir "$1")"; wdir "$1"; }
+
+section() { awk -v h="## $2" '$0 == h { f=1; next } /^## / { f=0 } f' "$1"; }
+
+table_rows() { awk '/^\|/ { n++; if (n == 1) next; if ($0 ~ /^\|[[:space:]:|-]+$/) next; print } !/^\|/ { n=0 }'; }
+
+trim() { sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//'; }
+
+stamp() { date '+%Y-%m-%d %H:%M'; }
+
+append_log() {
+  local slug="$1" actor="$2"; shift 2
+  local f; f="$(work_dir "$slug")/log.md"
+  [ -f "$f" ] || printf '# log, %s\n' "$slug" > "$f"
+  { printf '\n[%s] %s\n' "$actor" "$(stamp)"; for l in "$@"; do printf '%s\n' "$l"; done; } >> "$f"
+}
+
+fm_get() {
+  [ -f "$1" ] || return 0
+  awk -v k="$2" 'NR == 1 { if ($0 != "---") exit; next } $0 == "---" { exit }
+    { n = index($0, ":"); if (!n) next; key = substr($0, 1, n - 1); if (key != k) next
+      v = substr($0, n + 1); sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v); print v; exit }' "$1"
+}
+
+fm_set() {
+  local tmp; tmp="$(mktemp)"
+  awk -v k="$2" -v v="$3" 'NR == 1 && $0 == "---" { fm = 1; print; next }
+    fm && $0 == "---" { if (!done) print k ": " v; fm = 0; print; next }
+    fm { n = index($0, ":"); if (n && substr($0, 1, n - 1) == k) { print k ": " v; done = 1; next } }
+    { print }' "$1" > "$tmp" && cat "$tmp" > "$1"; rm -f "$tmp"
+}
+
+list_of() { printf '%s' "$1" | tr ',' ' ' | tr -s ' ' '\n' | grep -v '^none$' | grep -v '^$'; }
+
+in_set() { local v="$1"; shift; for x in "$@"; do [ "$v" = "$x" ] && return 0; done; return 1; }
+
+parent_of() { local p; p="$(fm_get "$QUESTS/$1/quest.md" continues)"; [ "$p" = none ] && p=""; printf '%s' "$p"; }
+
+root_of() { local s="$1" p n=0; while p="$(parent_of "$s")" && [ -n "$p" ]; do s="$p"; n=$((n+1)); [ "$n" -gt 50 ] && die "continues forms a loop at '$1'"; done; printf '%s' "$s"; }
+
+chain_of() {
+  local root="$1" d
+  printf '%s\n' "$root"
+  for d in "$QUESTS"/*/; do
+    d="$(basename "$d")"; [ "$d" = "$root" ] && continue
+    [ -f "$QUESTS/$d/quest.md" ] && [ "$(root_of "$d")" = "$root" ] && printf '%s\n' "$d"
+  done
+}
+
+children_of() { local d; for d in "$QUESTS"/*/; do d="$(basename "$d")"; [ "$(parent_of "$d")" = "$1" ] && printf '%s\n' "$d"; done; }
+
+quest_repo() { if is_ref "$1"; then printf '%s' "${1%%:*}"; else printf '%s' "$NAME"; fi; }
+
+uses_of() { local s="$1" out=""; is_ref "$s" && return 0; while [ -n "$s" ]; do out="$out $(list_of "$(fm_get "$QUESTS/$s/quest.md" uses)" | tr '\n' ' ')"; s="$(parent_of "$s")"; done; printf '%s\n' $out | grep -v '^$' | sort -u; }
+
+wt_of() { printf '%s' "$WTS/$(root_of "$1")"; }
+
+branch_of() { root_of "$1"; }
+
+free_port() {
+  local p i
+  for i in $(seq 1 50); do
+    p=$(( (RANDOM % 30000) + 20000 ))
+    if ! (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null; then printf '%s\n' "$p"; return; fi
+  done
+  die "infra: no free port found"
+}
+
+listening() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+
+env_file() { printf '%s' "$(wdir "$1")/sandbox${2:+-$2}.env"; }
+
+load_env() {
+  local f; f="$(env_file "$1" "$2")"
+  [ -f "$f" ] || die "no sandbox for $1${2:+ as $2}: run '$CLI prep $1${2:+ --as $2}'"
+  PORT=""; DB=""; WT=""; LOG=""; REPO=""
+  . "$f"
+}
+
+render() {
+  local tpl="$1" slug="$2" as="$3" review="$4" s other op u found
+  s="$tpl"
+  if [ "$review" = "1" ]; then s="${s//\{port\}/$(cfg repo review_port)}"; else s="${s//\{port\}/$PORT}"; fi
+  s="${s//\{db\}/$DB}"
+  s="${s//\{wt\}/$WT}"
+  s="${s//\{log\}/$LOG}"
+  s="${s//\{slug\}/$slug}"
+  s="${s//\{repo\}/$REPO}"
+  while [[ "$s" =~ \{port:([A-Za-z0-9_-]+)\} ]]; do
+    other="${BASH_REMATCH[1]}"; op=""
+    if [ "$review" = "1" ]; then
+      op="$(cfg_in "$(repo_path "$other")/$CONFIG_NAME" repo review_port)"
+    else
+      found=""
+      for u in $(uses_of "$slug"); do [ "$(quest_repo "$u")" = "$other" ] && { found="$u"; break; }; done
+      [ -n "$found" ] || die "{port:$other}: '$slug' uses no quest in repo $other. Add one with --uses $other:<slug>, or run $other from its own checkout"
+      op="$(sed -n 's/^PORT=//p' "$(env_file "$found" "$as")" 2>/dev/null)"
+      [ -n "$op" ] || die "{port:$other} has no value: run '$CLI prep $found${as:+ --as $as}' first, and '$CLI up' it if it must be running"
+    fi
+    s="${s//\{port:$other\}/$op}"
+  done
+  RENDERED="$s"
+}
+
+parse_flags() {
+  POS=(); AS=""; BASE=""; ROUND="1"; BG=0; REVIEW=0; NOSEED=0; ALL=0; FIX=0; SIDE=0; BYSELF=0; LINE=0; STDIN=0; USES=""; CONT=""; YES=0; SKIPS=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --as) [ $# -ge 2 ] || die "--as needs a value"; AS="$2"; shift 2 ;;
+      --base) [ $# -ge 2 ] || die "--base needs a value"; BASE="$2"; shift 2 ;;
+      --round) [ $# -ge 2 ] || die "--round needs a value"; ROUND="$2"; shift 2 ;;
+      --uses) [ $# -ge 2 ] || die "--uses needs a value"; USES="$2"; shift 2 ;;
+      --continues) [ $# -ge 2 ] || die "--continues needs a value"; CONT="$2"; shift 2 ;;
+      --bg) BG=1; shift ;;
+      --review) REVIEW=1; shift ;;
+      --no-seed) NOSEED=1; shift ;;
+      --all) ALL=1; shift ;;
+      --fix) FIX=1; shift ;;
+      --side) SIDE=1; shift ;;
+      --self) BYSELF=1; shift ;;
+      --line) LINE=1; shift ;;
+      --stdin) STDIN=1; shift ;;
+      --yes) YES=1; shift ;;
+      --skips) SKIPS=1; shift ;;
+      -*) die "unknown flag $1" ;;
+      *) POS+=("$1"); shift ;;
+    esac
+  done
+}
+
+cmd_where() {
+  need_root
+  say "repo=$NAME"
+  say "root=$ROOT"
+  say "config=$CFG"
+  say "machine_config=$MCFG$( [ -f "$MCFG" ] || printf ' (missing: first setup on this machine)')"
+  say "registry=$REG"
+  say "owner=$(cfgd carry owner unknown)"
+  say "quests=$QUESTS"
+  say "worktrees=$WTS"
+  say "rules=$(rules_of)"
+  say "work=$CARRY_HOME/work/$NAME"
+  say "entry_skill=$ENTRY_SKILL"
+}
+
+git_top() { local t; t="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1; abspath "$t"; }
+
+exclude_add() {
+  local ex; ex="$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null)"
+  [ -n "$ex" ] || ex="$(cd "$1" && cd "$(git rev-parse --git-common-dir)" && pwd)/info/exclude"
+  mkdir -p "$(dirname "$ex")"
+  grep -qxF "$2" "$ex" 2>/dev/null || printf '%s\n' "$2" >> "$ex"
+}
+
+cmd_init() {
+  local top
+  top="$(git_top "${CARRY_REPO:-$PWD}")" || die "not inside a git repo: carry is set up one repo at a time"
+  if [ -f "$MCFG" ]; then say "machine config: $MCFG"; else say "machine config: missing. The setup skill asks for it once and writes $MCFG"; fi
+  if [ -f "$top/$CONFIG_NAME" ]; then say "already set up: $top/$CONFIG_NAME"; else
+    mkdir -p "$top/$HOME_DIR"
+    sed "s/{name}/$(basename "$top")/" "$TEMPLATES/repo.example.toml" > "$top/$CONFIG_NAME"
+    say "created $top/$CONFIG_NAME. Fill in [repo] and [sandbox]"
+  fi
+  mkdir -p "$top/$HOME_DIR/quests"
+  exclude_add "$top" "$HOME_DIR/quests/"
+  CARRY_REPO="$top"; need_root
+  say "registered $NAME -> $ROOT in $REG"
+  say "kept out of git (in .git/info/exclude): $HOME_DIR/quests/. repo.toml and rules.md are for the owner to commit or not"
+}
+
+skipped() { reg_rows skip | cut -f1 | grep -qxF "$1"; }
+
+cmd_repos() {
+  local n p st any=""
+  while IFS="$(printf '\t')" read -r n p; do
+    [ -n "$n" ] || continue; any=1
+    st=""; [ -f "$p/$CONFIG_NAME" ] || st="  (missing: '$CLI throw' it, or set it up again)"
+    printf '%-22s %s%s\n' "$n" "$p" "$st"
+  done <<< "$(reg_rows repos)"
+  [ -n "$any" ] || say "no repos set up yet: the setup skill, or '$CLI init' in a repo"
+  while IFS="$(printf '\t')" read -r p n; do [ -n "$p" ] && printf '%-22s %s\n' skipped "$p"; done <<< "$(reg_rows skip)"
+  return 0
+}
+
+cmd_scan() {
+  local d top n
+  for d in "$@"; do
+    top="$(git_top "$d")" || { say "not-git  $d"; continue; }
+    if [ -f "$top/$CONFIG_NAME" ]; then
+      n="$(cfg_in "$top/$CONFIG_NAME" repo name)"; [ -n "$n" ] || n="$(basename "$top")"
+      [ "$(reg_get "$n")" = "$top" ] || reg_set "$n" "$top"
+      say "setup    $n  $top"
+    elif skipped "$top"; then say "skipped  $top"
+    else say "new      $top"; fi
+  done
+}
+
+cmd_skip() {
+  local top
+  top="$(git_top "$1")" || die "$1 is not a git repo: nothing to remember"
+  [ ! -f "$top/$CONFIG_NAME" ] || die "$top is set up. To remove carry from it: '$CLI throw' there"
+  reg_edit skip "$top" "$(date '+%Y-%m-%d')"
+  say "skip remembered for $top. Undo: the setup skill in that repo, or '$CLI throw --skips'"
+}
+
+cmd_quest() {
+  need_root
+  local slug="$1" type weight tpl dir old u
+  valid_slug "$slug"
+  type=feature; [ "$FIX" -eq 1 ] && type=fix
+  weight=main; [ "$SIDE" -eq 1 ] && weight=side
+  if [ -n "$CONT" ]; then
+    is_ref "$CONT" && die "a follow-up stays in its quest's repo: '$CLI quest ${CONT%%:*}:$slug --continues ${CONT##*:}'"
+    quest_file "$CONT" >/dev/null
+    in_set "$(fm_get "$QUESTS/$CONT/quest.md" state)" approved done || die "'$CONT' is $(fm_get "$QUESTS/$CONT/quest.md" state): a follow-up continues an approved or done quest"
+  elif [ -f "$QUESTS/$slug/quest.md" ]; then
+    CONT="$(fm_get "$QUESTS/$slug/quest.md" continues | sed 's/^none$//')"
+  fi
+  for u in $(list_of "$USES"); do
+    is_ref "$u" || die "--uses takes <repo>:<slug>, a quest in another repo. Work in this repo continues a quest instead: --continues $u"
+    [ "${u%%:*}" != "$NAME" ] || die "uses '$u' in this repo: continue it instead"
+    [ -f "$(ddir "$u")/quest.md" ] || die "no quest '$u': open it first, '$CLI quest $u'"
+  done
+  tpl="$TEMPLATES/$weight-quest.md"
+  dir="$QUESTS/$slug"
+  if [ -f "$dir/quest.md" ]; then
+    old="$dir/quest.md"
+    [ "$(fm_get "$old" state)" = draft ] && [ "$(fm_get "$old" weight)" = side ] && [ "$weight" = main ] \
+      || die "quest '$slug' already exists (only a side quest draft can be re-opened as a main quest)"
+    mv "$old" "$(work_dir "$slug")/side-draft.md"
+    [ -z "$USES" ] && USES="$(fm_get "$(wdir "$slug")/side-draft.md" uses | sed 's/^none$//')"
+    say "kept the side quest draft as $(wdir "$slug")/side-draft.md: carry over what it found"
+  fi
+  mkdir -p "$dir"
+  sed -e "s/{slug}/$slug/g" -e "s/{date}/$(date '+%Y-%m-%d')/g" -e "s/{type}/$type/g" \
+      -e "s/{repo}/$NAME/g" -e "s/{uses}/${USES:-none}/g" -e "s/{continues}/${CONT:-none}/g" "$tpl" \
+    | if [ "$type" = fix ]; then cat; else awk '$0 == "## Diagnosis" { skip = 1; next } /^## / { skip = 0 } !skip'; fi > "$dir/quest.md"
+  if [ -n "$CONT" ] && grep -q '^- queued: ' "$QUESTS/$CONT/quest.md"; then
+    local tmp; tmp="$(mktemp)"
+    awk -v n="$slug" '/^- queued: / { sub(/^- queued: /, "- queued -> " n ": ") } { print }' "$QUESTS/$CONT/quest.md" > "$tmp" && cat "$tmp" > "$QUESTS/$CONT/quest.md"; rm -f "$tmp"
+    say "picked up the queued changes from $CONT: put them in this plan"
+  fi
+  append_log "$slug" planner "opened: $type, $weight, repo $NAME${CONT:+, continues $CONT}${USES:+, uses $USES}"
+  say "$dir/quest.md"
+  banner "$slug"
+}
+
+PROBLEMS=""
+problem() { PROBLEMS="$PROBLEMS$1: $2
+"; }
+
+used_by() {
+  local me="$NAME:$1" n p d
+  while IFS="$(printf '\t')" read -r n p; do
+    [ -n "$p" ] && [ "$n" != "$NAME" ] || continue
+    for d in "$p/$HOME_DIR/quests"/*/quest.md; do
+      [ -f "$d" ] || continue
+      list_of "$(fm_get "$d" uses)" | grep -qxF "$me" && printf '%s:%s\n' "$n" "$(basename "$(dirname "$d")")"
+    done
+  done <<< "$(reg_rows repos)"
+}
+
+validate_quest() {
+  local f="$1" type weight bad slug repo u c
+  [ "$(fm_get "$f" kind)" = quest ] || problem "$f" "frontmatter kind is not 'quest'"
+  type="$(fm_get "$f" type)"; weight="$(fm_get "$f" weight)"; slug="$(fm_get "$f" slug)"; repo="$(fm_get "$f" repo)"
+  in_set "$type" feature fix || problem "$f" "type must be feature or fix"
+  in_set "$weight" side main || problem "$f" "weight must be side or main"
+  [ -n "$(fm_get "$f" spec)" ] || problem "$f" "frontmatter spec is empty: a link to the product spec, or none"
+  [ -n "$repo" ] || problem "$f" "frontmatter repo is empty: one quest per repo"
+  if [ -n "$CFG" ]; then
+    [ -z "$repo" ] || [ "$repo" = "$NAME" ] || problem "$f" "repo is '$repo', but this quest lives in repo $NAME"
+    for u in $(list_of "$(fm_get "$f" uses)"); do
+      is_ref "$u" || { problem "$f" "uses '$u': name a quest in another repo as <repo>:<slug>"; continue; }
+      [ "${u%%:*}" != "$NAME" ] || { problem "$f" "uses '$u' in this repo: continue it instead"; continue; }
+      [ -n "$(reg_get "${u%%:*}")" ] || { problem "$f" "uses '$u': no repo '${u%%:*}' is set up on this machine"; continue; }
+      [ -f "$(ddir "$u")/quest.md" ] || problem "$f" "uses '$u', which is not a quest"
+    done
+    c="$(fm_get "$f" continues)"
+    if [ -n "$c" ] && [ "$c" != none ]; then
+      if is_ref "$c"; then problem "$f" "continues '$c': a follow-up stays in its quest's repo, named by slug"
+      else [ -f "$QUESTS/$c/quest.md" ] || problem "$f" "continues '$c', which is not a quest"; fi
+    fi
+    if [ -n "$slug" ] && [ -n "$(used_by "$slug")" ] && [ -z "$(section "$f" Contract | trim | grep -v '^$' | grep -vix none)" ]; then
+      problem "$f" "$(used_by "$slug" | tr '\n' ' ')uses this quest, so the Contract section must say what it provides"
+    fi
+  fi
+  bad="$(grep -n 'TODO' "$f" | cut -c1-90)"
+  [ -z "$bad" ] || problem "$f" "TODO left:
+$bad"
+  bad="$(awk -v main="$( [ "$weight" = main ] && echo 1 || echo 0)" '
+    function check() {
+      if (h == "") return
+      if (!b) print "  " h ": no Build box"
+      if (!y) print "  " h ": no You see box"
+      if (main && !l) print "  " h ": no Verify, live box with \"Pass when\""
+    }
+    /^## / { check(); h = ""; b = y = l = 0; m = ""; if ($0 ~ /^## Task: /) { h = substr($0, 4); n++ } next }
+    h == "" { next }
+    /^\*\*Build\.\*\*/ { m = "b"; next }
+    /^\*\*You see\.\*\*/ { m = "y"; next }
+    /^\*\*Verify, live\.\*\*/ { m = "l"; next }
+    /^\*\*/ { m = ""; next }
+    /^- \[[ xX]\] / { if (m == "b") b = 1; if (m == "y") y = 1; if (m == "l" && $0 ~ /Pass when/) l = 1 }
+    END { check(); if (!n) print "  no task section: a heading \"## Task: <verb phrase>\"" }' "$f")"
+  [ -z "$bad" ] || problem "$f" "tasks incomplete:
+$bad"
+  if [ "$type" = fix ] && [ -z "$(section "$f" Diagnosis | trim | grep -v '^$' | grep -vix 'none')" ]; then
+    problem "$f" "a fix needs its Diagnosis: reproduction, root cause, why nothing caught it"
+  fi
+  if [ "$weight" = side ]; then
+    bad="$(section "$f" "Stays a side quest" | table_rows | awk -F'|' '{ a=$3; gsub(/[[:space:]]/, "", a); if (a != "no") print "  " $2 }')"
+    [ -z "$bad" ] || problem "$f" "not a side quest any more. Re-open as a main quest with '$CLI quest $slug' (add --fix for a fix); the side quest draft is kept:
+$bad"
+  fi
+}
+
+int_key() { case "$(fm_get "$1" "$2")" in ''|*[!0-9]*) problem "$1" "$2 must be a whole number" ;; esac; }
+
+validate_report() {
+  local f="$1" kind bad
+  kind="$(fm_get "$f" kind)"
+  case "$kind" in
+    verify-report)
+      in_set "$(fm_get "$f" verdict)" pass fail blocked || problem "$f" "verdict must be pass, fail or blocked"
+      in_set "$(fm_get "$f" stop)" none spec-gap infra contract-gap grew || problem "$f" "stop must be none, spec-gap, infra, contract-gap or grew"
+      for k in round fixed open new; do int_key "$f" "$k"; done
+      [ -n "$(section "$f" Expectations | trim | grep -v '^$')" ] || problem "$f" "Expectations section is empty"
+      bad="$(section "$f" Results | table_rows | awk -F'|' 'NF > 6 { m=$5; gsub(/[[:space:]]/, "", m); if (m != "-" && m != "defect" && m != "test" && m != "server" && m != "expectation" && m != "spec-gap" && m != "infra" && m != "contract-gap") print "  row" $2 "mode \x27" m "\x27" }')"
+      [ -z "$bad" ] || problem "$f" "unknown failure mode:
+$bad"
+      if [ "$(fm_get "$f" stop)" = none ] && section "$f" Results | table_rows | awk -F'|' '{ m=$5; gsub(/[[:space:]]/, "", m); if (m == "spec-gap" || m == "infra" || m == "contract-gap") f=1 } END { exit !f }'; then
+        problem "$f" "a spec-gap, infra or contract-gap row needs stop set to it"
+      fi
+      if [ "$(fm_get "$f" verdict)" = pass ] && section "$f" Results | table_rows | awk -F'|' '{ r=$4; gsub(/[[:space:]]/, "", r); if (r == "fail") f=1 } END { exit !f }'; then
+        problem "$f" "verdict pass with a failing row"
+      fi
+      ;;
+    build-report)
+      in_set "$(fm_get "$f" state)" done parked stopped || problem "$f" "state must be done, parked or stopped"
+      for k in round boxes_done boxes_total; do int_key "$f" "$k"; done
+      ;;
+    review) ;;
+    *) problem "$f" "unknown kind '$kind'" ;;
+  esac
+}
+
+lint_one() {
+  local f="$1"
+  CFG=""; NAME=""; CARRY_REPO="$(cd "$(dirname "$f")" && pwd)"; find_root >/dev/null 2>&1 && need_root
+  case "$(fm_get "$f" kind)" in
+    quest) validate_quest "$f" ;;
+    *) validate_report "$f" ;;
+  esac
+  printf '%s' "$PROBLEMS"
+}
+
+lint_path() {
+  local a="$1" d w=""
+  [ -f "$a" ] && { printf '%s' "$a"; return; }
+  printf '%s' "$a" | grep -Eq '^([A-Za-z0-9._-]+:)?[a-z0-9][a-z0-9-]*(/[A-Za-z0-9._-]+)?$' || { printf '%s' "$a"; return; }
+  case "$a" in */*) w="${a#*/}"; a="${a%%/*}" ;; esac
+  if [ -z "$w" ] || [ "$w" = review.md ] || [ "$w" = quest.md ]; then d="$(need_root; ddir "$a")"; else d="$(need_root; wdir "$a")"; fi || { printf '%s' "$1"; return; }
+  printf '%s/%s' "$d" "${w:-quest.md}"
+}
+
+cmd_lint() {
+  local f
+  [ $# -ge 1 ] || die "lint <file | slug | repo:slug | slug/report.md> [...]"
+  for f in "$@"; do
+    f="$(lint_path "$f")"
+    [ -f "$f" ] || { problem "$f" "no such file"; continue; }
+    PROBLEMS="$PROBLEMS$(lint_one "$f")"
+  done
+  if [ -n "$PROBLEMS" ]; then printf '%s\n' "$PROBLEMS" | grep -v '^$' >&2; exit 1; fi
+  say "lint ok, $# file(s)"
+}
+
+quest_hash() {
+  awk 'NR == 1 && $0 == "---" { fm = 1; next } fm && $0 == "---" { fm = 0; next }
+    $0 == "## Calls" { exit }
+    fm { if ($0 ~ /^(state|approved|hash|done|pr|start):/) next; print; next }
+    { gsub(/- \[[xX]\]/, "- [ ]"); print }' "$1" | { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; } | cut -c1-8
+}
+
+edited() { local f="$1"; [ -n "$(fm_get "$f" hash)" ] && [ "$(quest_hash "$f")" != "$(fm_get "$f" hash)" ]; }
+
+started() { ls "$(wdir "$1")" 2>/dev/null | grep -Eq '^build-[0-9]+\.(md|log)$'; }
+
+cmd_approve() {
+  need_root
+  local slug="$1" f h state
+  f="$(quest_file "$slug")" || exit 1
+  [ "$BYSELF" -eq 0 ] || [ "$(fm_get "$f" weight)" = side ] || die "'$slug' is a main quest: only the owner confirms it"
+  state="$(fm_get "$f" state)"
+  case "$state" in
+    draft) ;;
+    approved)
+      edited "$f" || { say "'$slug' is approved, unchanged"; return; }
+      started "$slug" && die "'$slug' has started building, so its plan no longer changes. Undo the edit, and put new work in a follow-up: '$CLI quest <new> --continues $slug'"
+      ;;
+    *) die "'$slug' is $state. New work goes in a follow-up: '$CLI quest <new> --continues $slug'" ;;
+  esac
+  validate_quest "$f"
+  [ -z "$PROBLEMS" ] || { printf '%s' "$PROBLEMS" >&2; die "refused"; }
+  h="$(quest_hash "$f")"
+  fm_set "$f" state approved
+  fm_set "$f" approved "$(date '+%Y-%m-%d')"
+  fm_set "$f" hash "$h"
+  if [ "$BYSELF" -eq 1 ]; then
+    append_log "$slug" main "self-approved: a side quest${state:+$( [ "$state" = approved ] && echo ' again, before building')}"
+    grep -qx '## Calls' "$f" || printf '\n## Calls\n\n' >> "$f"
+    printf -- '- made: approved this side quest without the owner, since nobody asked to plan first. Say "plan first" next time to confirm it yourself\n' >> "$f"
+  else
+    append_log "$slug" owner "confirmed${state:+$( [ "$state" = approved ] && echo ' again, before building')}"
+  fi
+  say "approved $slug: $(fm_get "$f" type), $(fm_get "$f" weight), repo $(quest_repo "$slug")"
+  say "Next: the build skill (skills/build/SKILL.md) for $slug"
+  banner "$slug"
+}
+
+latest_round() { ls "$(wdir "$1")" 2>/dev/null | sed -n "s/^$2-\([0-9][0-9]*\)\.md$/\1/p" | sort -n | tail -1; }
+
+boxes() { awk '/^- \[[ xX]\] / { n++; if ($0 ~ /^- \[[xX]\]/) d++ } END { printf "%d of %d", d, n }' "$1"; }
+
+tasks() {
+  awk 'function close_task() { if (h) { t++; if (ok) d++ } h = 0 }
+    /^## Task: / { close_task(); h = 1; ok = 1; next }
+    /^## / { close_task(); next }
+    h && /^- \[ \] / { ok = 0 }
+    END { close_task(); printf "%d/%d", d, t }' "$1"
+}
+
+bar() {
+  local d="${1%%/*}" t="${1##*/}" w=16 n=0 i=0 s=""
+  [ "$t" -gt 0 ] 2>/dev/null && n=$(( d * w / t ))
+  while [ "$i" -lt "$w" ]; do if [ "$i" -lt "$n" ]; then s="${s}█"; else s="${s}░"; fi; i=$((i+1)); done
+  printf '%s' "$s"
+}
+
+fmt_elapsed() { local s="$1"; if [ "$s" -ge 3600 ]; then printf '%dh%02dm' $((s/3600)) $((s%3600/60)); else printf '%dm' $((s/60)); fi; }
+
+mtime() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null; }
+
+alive_spawn() {
+  local pf p lbl
+  for pf in "$(wdir "$1")"/spawn-*.pid; do
+    [ -f "$pf" ] || continue
+    p="$(cat "$pf")"; kill -0 "$p" 2>/dev/null || continue
+    lbl="$(basename "$pf" .pid)"; lbl="${lbl#spawn-}"
+    printf '%s %s %s\n' "${lbl%-*}" "${lbl##*-}" "$(fmt_elapsed $(( $(date +%s) - $(mtime "$pf") )))"
+    return
+  done
+}
+
+role_name() { case "$1" in build) printf builder ;; verify) printf verifier ;; esac; }
+role_ing() { case "$1" in build) printf building ;; verify) printf verifying ;; esac; }
+
+last_progress() { grep '^box: ' "$(wdir "$1")/log.md" 2>/dev/null | tail -1 | sed 's/^box: //'; }
+
+open_raised() {
+  local f="$QUESTS/$1/quest.md" r u
+  r="$(grep -c '^- raised:' "$f" 2>/dev/null)"; u="$(grep -c '^- ruled:' "$f" 2>/dev/null)"
+  echo $(( ${r:-0} - ${u:-0} ))
+}
+
+open_queued() { local n; n="$(grep -c '^- queued: ' "$QUESTS/$1/quest.md" 2>/dev/null)"; echo "${n:-0}"; }
+
+bounces() {
+  local f="$QUESTS/$1/review.md" n
+  [ -f "$f" ] || { echo 0; return; }
+  n="$(section "$f" Items | table_rows | awk -F'|' '{ v=$6; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); if (v ~ /^bounce/) c++ } END { print c+0 }')"
+  echo "${n:-0}"
+}
+
+unanswered() {
+  local f="$QUESTS/$1/review.md" n
+  [ -f "$f" ] || { echo 0; return; }
+  n="$(section "$f" Items | table_rows | grep -cE '\|[[:space:]]*\|[[:space:]]*$')"
+  echo "${n:-0}"
+}
+
+next_step() {
+  local slug="$1" f state weight b v vf bs verdict stop u us sp
+  f="$QUESTS/$slug/quest.md"
+  state="$(fm_get "$f" state)"; weight="$(fm_get "$f" weight)"
+  for u in $(uses_of "$slug"); do
+    us="$(fm_get "$(ddir "$u")/quest.md" state)"
+    [ "$us" = draft ] && say "uses '$u', which is not confirmed yet. Confirm and prep it first"
+  done
+  case "$state" in
+    draft)
+      if [ "$weight" = side ]; then say "approve: lint, then '$CLI approve $slug --self'. The owner asked to plan first -> show them the plan and wait for '$CLI approve $slug'"
+      else say "confirm: lint, show the owner the plan, then on their confirmation '$CLI approve $slug'"; fi
+      return ;;
+    done) say "PR open. New work: '$CLI quest <new> --continues $slug'. After the owner merges: '$CLI tidy'"; return ;;
+  esac
+  if edited "$f"; then
+    if started "$slug"; then say "plan edited after building started: undo the edit, and put new work in '$CLI quest <new> --continues $slug'"
+    else say "re-confirm: quest.md changed. Show the owner the change, then '$CLI approve $slug'"; fi
+    return
+  fi
+  sp="$(alive_spawn "$slug")"
+  if [ -n "$sp" ]; then
+    set -- $sp
+    say "$(role_ing "$1") round $2: $(role_name "$1") running, $3 so far. '$CLI wait $slug', or '$CLI reopen $slug \"<why>\"' if the owner changed direction"
+    [ -n "$(last_progress "$slug")" ] && say "  last: $(last_progress "$slug")"
+    return
+  fi
+  b="$(latest_round "$slug" build)"; v="$(latest_round "$slug" verify)"
+  if [ -z "$b" ]; then
+    if [ -f "$(wdir "$slug")/build-1.log" ]; then say "build round 1: spawned, no report yet. See $(wdir "$slug")/build-1.log; a finished spawn with no report is a finding"
+    else say "build round 1: '$CLI prep $slug' then '$CLI spawn build $slug --round 1'"; fi
+    return
+  fi
+  if [ "$weight" = side ]; then
+    bs="$(fm_get "$(wdir "$slug")/build-$b.md" state)"
+    [ "$bs" = done ] || { say "stopped: build round $b is ${bs:-unreported}. The owner decides"; return; }
+  else
+    if [ -z "$v" ] || [ "$b" -gt "$v" ]; then
+      say "verify round $b: '$CLI prep $slug --as verify' then '$CLI spawn verify $slug --round $b'"
+      [ -n "$(uses_of "$slug")" ] && say "  the verifier brings up $(uses_of "$slug" | tr '\n' ' ')with --as verify and checks end to end"
+      return
+    fi
+    vf="$(wdir "$slug")/verify-$v.md"; verdict="$(fm_get "$vf" verdict)"; stop="$(fm_get "$vf" stop)"
+    if [ "$verdict" != pass ]; then
+      if [ "$stop" != none ] || twice_failed "$slug" "$v"; then say "stopped: verify round $v says $verdict, stop ${stop:-?}. The owner decides"
+      else say "build round $((v+1)): '$CLI spawn build $slug --round $((v+1))'"; fi
+      return
+    fi
+  fi
+  [ "$(open_queued "$slug")" -gt 0 ] && say "queued: $(open_queued "$slug") change(s) the owner cut in with. After this round: '$CLI quest <new> --continues $slug --side' and build them"
+  if [ ! -f "$QUESTS/$slug/review.md" ]; then say "review: '$CLI review $slug', then write review.md for the owner"; return; fi
+  [ "$(unanswered "$slug")" -gt 0 ] && { say "owner review: $(unanswered "$slug") item(s) in review.md not answered"; return; }
+  if [ "$(bounces "$slug")" -gt 0 ] && [ -z "$(children_of "$slug")" ]; then
+    say "bounced: $(bounces "$slug") item(s). Judge each: a box that is not really done -> '$CLI spawn build $slug --round $((b+1))' (the brief carries the bounces), verify it for a main quest, rewrite review.md. New scope -> '$CLI quest <new> --continues $slug --side'"
+    return
+  fi
+  say "PR: '$CLI sync $slug'. Patch changed -> re-run the check$( [ "$weight" = main ] && echo ' and the verifier'). Then push, open or update the PR, '$CLI done $slug <pr-url>'"
+}
+
+twice_failed() { [ "$2" -ge 2 ] && [ "$(fm_get "$(wdir "$1")/verify-$(($2-1)).md" verdict)" != pass ]; }
+
+where_is() {
+  local slug="$1" f state weight b v vf bs sp
+  f="$QUESTS/$slug/quest.md"
+  state="$(fm_get "$f" state)"; weight="$(fm_get "$f" weight)"
+  case "$state" in
+    draft) say drafting; return ;;
+    done) say "$state"; return ;;
+  esac
+  sp="$(alive_spawn "$slug")"
+  if [ -n "$sp" ]; then set -- $sp; say "$(role_ing "$1") r$2"; return; fi
+  b="$(latest_round "$slug" build)"
+  [ -n "$b" ] || { say approved; return; }
+  if [ "$weight" = side ]; then
+    bs="$(fm_get "$(wdir "$slug")/build-$b.md" state)"
+    [ "$bs" = done ] || { say stopped; return; }
+  else
+    v="$(latest_round "$slug" verify)"
+    if [ -z "$v" ] || [ "$b" -gt "$v" ]; then say "verify r$b next"; return; fi
+    vf="$(wdir "$slug")/verify-$v.md"
+    if [ "$(fm_get "$vf" verdict)" != pass ]; then
+      if [ "$(fm_get "$vf" stop)" != none ] || twice_failed "$slug" "$v"; then say stopped; else say "build r$((v+1)) next"; fi
+      return
+    fi
+  fi
+  [ -f "$QUESTS/$slug/review.md" ] || { say "writing review"; return; }
+  [ "$(unanswered "$slug")" -gt 0 ] && { say "review ready"; return; }
+  [ "$(bounces "$slug")" -gt 0 ] && [ -z "$(children_of "$slug")" ] && { say bounced; return; }
+  say accepted
+}
+
+quest_label() { [ "$(fm_get "$QUESTS/$1/quest.md" weight)" = side ] && printf 'side quest' || printf 'main quest'; }
+
+banner() {
+  local label; label="$(quest_label "$1" | tr '[:lower:]' '[:upper:]')"
+  say "── ⚔ $label $1 · ${2:-$(where_is "$1")} ──"
+}
+
+open_quests() {
+  local d slug
+  [ -d "$QUESTS" ] || return 0
+  for d in $(ls -t "$QUESTS"/*/quest.md 2>/dev/null); do
+    slug="$(basename "$(dirname "$d")")"
+    in_set "$(fm_get "$d" state)" draft approved && printf '%s\n' "$slug"
+  done
+}
+
+running_text() {
+  local slug="$1" sp lp
+  sp="$(alive_spawn "$slug")"; [ -n "$sp" ] || return 0
+  set -- $sp
+  printf '%s r%s %s' "$(role_name "$1")" "$2" "$3"
+  lp="$(last_progress "$slug")"; [ -n "$lp" ] && printf ' · last: %s' "$lp"
+}
+
+needs_text() {
+  local slug="$1" f="$QUESTS/$1/quest.md" state need="" r
+  state="$(fm_get "$f" state)"
+  [ "$(open_raised "$slug")" -gt 0 ] && need="$need raised:$(open_raised "$slug")"
+  [ "$(open_queued "$slug")" -gt 0 ] && need="$need queued:$(open_queued "$slug")"
+  [ "$state" = draft ] && [ "$(fm_get "$f" weight)" = main ] && need="$need confirm"
+  [ "$state" = approved ] && edited "$f" && need="$need edited"
+  [ "$state" = approved ] && [ "$(unanswered "$slug")" -gt 0 ] && need="$need review:$(unanswered "$slug")"
+  r="$(wdir "$slug")/verify-$(latest_round "$slug" verify).md"
+  case "$(fm_get "$r" stop)" in ""|none) ;; *) need="$need stop:$(fm_get "$r" stop)" ;; esac
+  printf '%s' "${need# }"
+}
+
+status_line() {
+  local dir slug out="" n=0 run
+  [ "$STDIN" -eq 1 ] && dir="$(cat 2>/dev/null | tr -d '\n' | sed -n 's/.*"current_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
+  [ -n "$dir" ] && [ -d "$dir" ] && CARRY_REPO="$dir"
+  find_root >/dev/null 2>&1 || return 0
+  need_root 2>/dev/null || return 0
+  for slug in $(open_quests); do
+    n=$((n+1)); [ "$n" -gt 2 ] && continue
+    out="$out · ⚔ $(fm_get "$QUESTS/$slug/quest.md" weight) $slug · $(where_is "$slug") · $(tasks "$QUESTS/$slug/quest.md") tasks"
+    run="$(running_text "$slug")"; [ -n "$run" ] && out="$out · $run"
+  done
+  [ "$n" -gt 2 ] && out="$out · +$((n-2))"
+  [ "$n" -gt 0 ] || out=" · planning: no quest open"
+  say "carry · $NAME$out"
+}
+
+cmd_status() {
+  [ "$LINE" -eq 1 ] && { status_line; return; }
+  need_root
+  local d f slug state need link right
+  if [ -n "$1" ]; then
+    f="$(quest_file "$1")" || exit 1
+    for k in type weight state repo uses continues spec approved pr; do
+      case "$(fm_get "$f" "$k")" in ""|none) ;; *) say "$k: $(fm_get "$f" "$k")" ;; esac
+    done
+    say "branch: $(branch_of "$1"), worktree: $(wt_of "$1")"
+    for r in "$(wdir "$1")"/verify-*.md; do [ -f "$r" ] && say "$(basename "$r" .md): $(fm_get "$r" verdict), stop $(fm_get "$r" stop)"; done
+    say "status: $(where_is "$1")"
+    say "tasks: $(tasks "$f") done ($(boxes "$f") boxes)"
+    [ -n "$(running_text "$1")" ] && say "running: $(running_text "$1")"
+    need="$(needs_text "$1")"; [ -n "$need" ] && say "needs the owner: $need"
+    next_step "$1" | sed 's/^/next: /'
+    return 0
+  fi
+  [ -d "$QUESTS" ] || { say "no quests yet"; return; }
+  local linked="" u n=0
+  for d in "$QUESTS"/*/; do
+    slug="$(basename "$d")"
+    f="$d/quest.md"; [ -f "$f" ] || continue
+    n=$((n+1))
+    state="$(fm_get "$f" state)"
+    right="$(running_text "$slug")"
+    if [ -z "$right" ]; then need="$(needs_text "$slug")"; [ -n "$need" ] && right="waiting on you: $need"; fi
+    link=""
+    [ -n "$(parent_of "$slug")" ] && link="continues:$(parent_of "$slug")"
+    [ -n "$(list_of "$(fm_get "$f" uses)")" ] && link="uses:$(list_of "$(fm_get "$f" uses)" | tr '\n' ',' | sed 's/,$//')"
+    printf '⚔ %-4s %-28s %-16s %s %-10s %s%s\n' "$(fm_get "$f" weight)" "$slug" "$(where_is "$slug")" "$(bar "$(tasks "$f")")" "$(tasks "$f") tasks" "${right:--}" "${link:+ · $link}"
+    linked="$linked $(uses_of "$slug" | tr '\n' ' ') $(used_by "$slug" | tr '\n' ' ')"
+  done
+  [ "$n" -gt 0 ] || say "no quests yet"
+  linked="$(printf '%s\n' $linked | grep -v '^$' | sort -u)"
+  [ -n "$linked" ] || return 0
+  say "linked, in other repos ('$CLI status <repo>:<slug>' for one):"
+  for u in $linked; do
+    f=""; [ -n "$(reg_get "${u%%:*}")" ] && f="$(ddir "$u")/quest.md"
+    if [ -f "$f" ]; then printf '%-9s %-8s %-6s %s\n' "$(fm_get "$f" state)" "$(fm_get "$f" type)" "$(fm_get "$f" weight)" "$u"
+    else printf '%-9s %-8s %-6s %s\n' missing - - "$u"; fi
+  done
+}
+
+cmd_log() {
+  need_root
+  local slug="$1" f l; shift
+  f="$(quest_file "$slug")" || exit 1
+  [ $# -ge 1 ] && [ $# -le 3 ] || die "one to three lines"
+  append_log "$slug" "${CARRY_ROLE:-main}" "$@"
+  for l in "$@"; do
+    case "$l" in
+      raised:*|ruled:*|made:*|queued:*)
+        grep -qx '## Calls' "$f" || printf '\n## Calls\n\n' >> "$f"
+        printf -- '- %s\n' "$l" >> "$f" ;;
+    esac
+    case "$l" in queued:*) banner "$slug" "$l" ;; esac
+  done
+}
+
+cmd_reopen() {
+  need_root
+  local slug="$1" why="$2" f pf arc x wd
+  f="$(quest_file "$slug")" || exit 1
+  [ "$(fm_get "$f" state)" = approved ] || die "'$slug' is $(fm_get "$f" state): only an approved quest reopens"
+  [ -n "$why" ] || die "reopen <slug> \"<why>\": one line, the owner's change of direction"
+  wd="$(work_dir "$slug")"
+  for pf in "$wd"/spawn-*.pid; do
+    [ -f "$pf" ] || continue
+    stop_pid "$pf"
+    x=0; while [ "$x" -lt 20 ] && pgrep -f "$(wt_of "$slug")" >/dev/null 2>&1; do sleep 1; x=$((x+1)); done
+  done
+  arc="$wd/archive-$(date '+%Y%m%d%H%M%S')"
+  mkdir -p "$arc"
+  for x in "$wd"/build-* "$wd"/verify-* "$wd"/brief-* "$QUESTS/$slug/review.md"; do [ -e "$x" ] && mv "$x" "$arc/"; done
+  rmdir "$arc" 2>/dev/null
+  fm_set "$f" state draft; fm_set "$f" approved ""; fm_set "$f" hash ""
+  append_log "$slug" owner "reopened: $why"
+  grep -qx '## Calls' "$f" || printf '\n## Calls\n\n' >> "$f"
+  printf -- '- reopened: %s\n' "$why" >> "$f"
+  say "reopened $slug as a draft; worktree, branch and commits kept, earlier reports in $(basename "$arc" 2>/dev/null || echo archive)/. Edit the plan, then '$CLI approve $slug$( [ "$(fm_get "$f" weight)" = side ] && echo ' --self')'"
+  banner "$slug" "reopened: $why"
+}
+
+base_ref() { printf '%s' "${BASE:-$(cfgd repo base origin/main)}"; }
+
+fetch_base() {
+  local rp="$1" base="$2"
+  case "$base" in origin/*) git -C "$rp" fetch --quiet origin || die "fetch failed in $(basename "$rp"): the base would be stale. Fetch from your own terminal, then retry" ;; esac
+}
+
+cmd_worktree() {
+  need_root
+  local slug="$1" rp wt br base ex
+  quest_file "$slug" >/dev/null
+  rp="$(repo_path "$(quest_repo "$slug")")"
+  wt="$(wt_of "$slug")"; br="$(branch_of "$slug")"
+  if [ ! -d "$wt" ]; then
+    base="$(base_ref)"
+    mkdir -p "$WTS"
+    if git -C "$rp" show-ref --verify --quiet "refs/heads/$br"; then
+      git -C "$rp" worktree add --quiet "$wt" "$br" || die "worktree add failed"
+    else
+      fetch_base "$rp" "$base"
+      git -C "$rp" worktree add --quiet -b "$br" "$wt" "$base" || die "worktree add failed"
+    fi
+  fi
+  [ -n "$(fm_get "$QUESTS/$slug/quest.md" start)" ] || fm_set "$QUESTS/$slug/quest.md" start "$(git -C "$wt" rev-parse --short HEAD)"
+  mkdir -p "$wt/$HOME_DIR/quests"
+  cp "$QUESTS/$slug/quest.md" "$wt/$HOME_DIR/quests/$slug.md"
+  exclude_add "$wt" "$HOME_DIR/quests/"
+  say "$wt"
+}
+
+cmd_sandbox() {
+  need_root
+  local slug="$1" f port db prefix cmd seed repo
+  quest_file "$slug" >/dev/null
+  repo="$(quest_repo "$slug")"
+  work_dir "$slug" >/dev/null
+  f="$(env_file "$slug" "$AS")"
+  if [ -f "$f" ]; then say "sandbox exists, started by another run: leave it up when you finish"; cat "$f"; return; fi
+  port="$(free_port)"
+  prefix="$(cfgd repo db_prefix "$NAME")"
+  db="$(printf '%s_%s%s_%s' "$prefix" "$slug" "${AS:+_$AS}" "$port" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9_\n' '_' | cut -c1-63)"
+  {
+    printf 'PORT=%s\n' "$port"
+    printf 'DB=%s\n' "$db"
+    printf 'WT=%s\n' "$(wt_of "$slug")"
+    printf 'LOG=%s\n' "$(wdir "$slug")/server${AS:+-$AS}.log"
+    printf 'REPO=%s\n' "$repo"
+    printf 'AS=%s\n' "$AS"
+  } > "$f"
+  load_env "$slug" "$AS"
+  cmd="$(cfg sandbox create)"
+  if [ -n "$cmd" ]; then
+    render "$cmd" "$slug" "$AS" 0; bash -c "$RENDERED" || { rm -f "$f"; die "infra: sandbox create failed for $db"; }
+  fi
+  seed="$(cfg repo seed)"
+  if [ "$NOSEED" -eq 0 ] && [ -n "$seed" ]; then
+    ( render "$seed" "$slug" "$AS" 0 ) >/dev/null || { ALL=0; cmd_down "$slug" >/dev/null 2>&1; exit 1; }
+    render "$seed" "$slug" "$AS" 0; (cd "$WT" && bash -c "$RENDERED") || die "infra: seed failed for $repo (sandbox kept; '$CLI down $slug${AS:+ --as $AS}' to drop it)"
+  fi
+  cat "$f"
+}
+
+cmd_prep() {
+  local slug="$1"
+  [ -n "$AS" ] || cmd_worktree "$slug"
+  cmd_sandbox "$slug"
+}
+
+pid_file() { printf '%s' "$(wdir "$1")/server${2:+-$2}${3:+-review}.pid"; }
+
+cmd_up() {
+  need_root
+  local slug="$1" cmd port pf i
+  load_env "$slug" "$AS"
+  cmd="$(cfg repo run)"; [ -n "$cmd" ] || die "repo $REPO has no run command"
+  if [ "$REVIEW" -eq 1 ]; then
+    port="$(cfg repo review_port)"; [ -n "$port" ] || die "repo $REPO has no review_port"
+    pf="$(pid_file "$slug" "$AS" review)"
+    if [ -f "$pf" ] && kill -0 "$(awk '{print $1}' "$pf")" 2>/dev/null; then say "up, $slug ($REPO), http://127.0.0.1:$port (already)"; return; fi
+    listening "$port" && die "review port $port is busy: stop what holds it first"
+  else
+    port="$PORT"
+    pf="$(pid_file "$slug" "$AS" "")"
+    if [ -f "$pf" ] && kill -0 "$(awk '{print $1}' "$pf")" 2>/dev/null; then say "up, $slug ($REPO), http://127.0.0.1:$port (already)"; return; fi
+  fi
+  render "$cmd" "$slug" "$AS" "$REVIEW"; cmd="$RENDERED"
+  ( cd "$WT" && exec nohup bash -c "$cmd" ) </dev/null >> "$LOG" 2>&1 &
+  printf '%s %s\n' "$!" "$AS" > "$pf"
+  for i in $(seq 1 60); do
+    if listening "$port"; then
+      say "up, $slug ($REPO), http://127.0.0.1:$port, log $LOG"
+      seed_after_up "$slug" "$port"
+      return
+    fi
+    kill -0 "$(awk '{print $1}' "$pf")" 2>/dev/null || die "infra: $REPO exited before listening - see $LOG"
+    sleep 1
+  done
+  die "infra: $REPO not listening on $port after 60s - see $LOG"
+}
+
+seed_after_up() {
+  local slug="$1" port="$2" tpl marker
+  tpl="$(cfg repo seed_after_up)"
+  [ -n "$tpl" ] && [ "$NOSEED" -eq 0 ] || return 0
+  marker="$(env_file "$slug" "$AS").seeded"
+  [ "$REVIEW" -eq 1 ] && marker="$marker-review"
+  [ -f "$marker" ] && return 0
+  tpl="${tpl//\{port\}/$port}"
+  render "$tpl" "$slug" "$AS" "$REVIEW"; (cd "$WT" && bash -c "$RENDERED") >> "$LOG" 2>&1 || die "infra: seed_after_up failed for $REPO - see $LOG"
+  touch "$marker"
+  say "seeded, $REPO, through the running server"
+}
+
+cmd_review() {
+  need_root
+  local slug="$1" u
+  quest_file "$slug" >/dev/null
+  for u in $(uses_of "$slug"); do
+    [ -f "$(env_file "$u" "")" ] || { say "skip $u: no sandbox, run '$CLI prep $u'"; continue; }
+    "$SELF" up "$u" --review || exit 1
+  done
+  if [ -f "$(env_file "$slug" "")" ]; then ( REVIEW=1; AS=""; cmd_up "$slug" ) || exit 1
+  else say "skip $slug: no sandbox, run '$CLI prep $slug'"; fi
+  say "diff:"; cmd_diff "$slug" | tail -1 | sed 's/^/  /'
+  banner "$slug"
+}
+
+stop_pid() { local p; p="$(awk '{print $1}' "$1" 2>/dev/null)"; [ -n "$p" ] && { pkill -TERM -P "$p" 2>/dev/null; kill "$p" 2>/dev/null; }; rm -f "$1"; }
+
+cmd_down() {
+  need_root
+  local slug="$1" f pf cmd file_as
+  valid_slug "$slug"
+  for pf in "$(wdir "$slug")"/server*.pid; do
+    [ -f "$pf" ] || continue
+    if [ "$ALL" -eq 1 ] || [ "$(awk '{print $2}' "$pf")" = "$AS" ]; then stop_pid "$pf"; fi
+  done
+  for f in "$(wdir "$slug")"/sandbox*.env; do
+    [ -f "$f" ] || continue
+    file_as="$(sed -n 's/^AS=//p' "$f")"
+    [ "$ALL" -eq 1 ] || [ "$file_as" = "$AS" ] || continue
+    PORT=""; DB=""; WT=""; LOG=""; REPO=""; . "$f"
+    cmd="$(cfg sandbox drop)"
+    [ -n "$cmd" ] && { render "$cmd" "$slug" "$file_as" 0; bash -c "$RENDERED" || say "warn: drop failed for $DB"; }
+    rm -f "$f" "$f".seeded*
+    say "down, $slug${file_as:+ as $file_as}, $DB dropped"
+  done
+}
+
+cmd_exec() {
+  need_root
+  local slug="$1" key="$2" tpl dir
+  quest_file "$slug" >/dev/null
+  REPO="$(quest_repo "$slug")"
+  tpl="$(cfg repo "$key")"; [ -n "$tpl" ] || die "repo $REPO has no '$key' command"
+  if [ -f "$(env_file "$slug" "$AS")" ]; then
+    load_env "$slug" "$AS"; dir="$WT"
+  else
+    case "$tpl" in *"{port"*|*"{db}"*|*"{log}"*) die "'$key' needs a sandbox: run '$CLI prep $slug${AS:+ --as $AS}'" ;; esac
+    dir="$(wt_of "$slug")"; [ -d "$dir" ] || die "no worktree: run '$CLI prep $slug'"
+  fi
+  render "$tpl" "$slug" "$AS" 0; (cd "$dir" && bash -c "$RENDERED")
+}
+
+cmd_diff() {
+  need_root
+  local slug="$1" wt from
+  wt="$(wt_of "$slug")"; [ -d "$wt" ] || die "no worktree for $slug"
+  if [ -n "$(parent_of "$slug")" ]; then from="$(fm_get "$QUESTS/$slug/quest.md" start)"; fi
+  [ -n "$from" ] || from="$(git -C "$wt" merge-base HEAD "$(base_ref)")" || die "no merge base with $(base_ref)"
+  git -C "$wt" diff --stat "$from"
+}
+
+patch_id() { git -C "$1" diff "$(git -C "$1" merge-base HEAD "$2")" HEAD | git patch-id --stable | cut -d' ' -f1; }
+
+cmd_sync() {
+  need_root
+  local slug="$1" wt base rp before after
+  quest_file "$slug" >/dev/null
+  wt="$(wt_of "$slug")"; [ -d "$wt" ] || die "no worktree for $slug"
+  rp="$(repo_path "$(quest_repo "$slug")")"; base="$(base_ref)"
+  [ -z "$(git -C "$wt" status --porcelain --untracked-files=no)" ] || die "uncommitted changes in $wt: the builder commits first"
+  fetch_base "$rp" "$base"
+  before="$(patch_id "$wt" "$base")"
+  if git -C "$wt" merge-base --is-ancestor "$base" HEAD; then say "sync: already on the latest $base, patch unchanged"; return; fi
+  if ! git -C "$wt" rebase --quiet "$base" >/dev/null 2>&1; then
+    git -C "$wt" rebase --abort >/dev/null 2>&1
+    append_log "$slug" main "sync: rebase onto $base conflicted, left as it was"
+    die "rebase onto $base conflicts. Branch left as it was. Stop for the owner"
+  fi
+  after="$(patch_id "$wt" "$base")"
+  if [ "$before" = "$after" ]; then say "sync: rebased onto $base, patch unchanged"
+  else say "sync: rebased onto $base, patch CHANGED: re-run the check$( [ "$(fm_get "$QUESTS/$slug/quest.md" weight)" = main ] && echo ' and the verifier') before the PR"; fi
+  append_log "$slug" main "sync: rebased onto $base, patch $( [ "$before" = "$after" ] && echo unchanged || echo changed)"
+}
+
+cmd_done() {
+  need_root
+  local slug="$1" pr="$2" f
+  f="$(quest_file "$slug")" || exit 1
+  [ "$(fm_get "$f" state)" = approved ] || die "'$slug' is $(fm_get "$f" state), not approved"
+  edited "$f" && die "quest.md changed after approval: undo the edit, or put it in a follow-up"
+  [ -f "$QUESTS/$slug/review.md" ] || die "no review.md: the owner has not reviewed '$slug'"
+  [ "$(unanswered "$slug")" -eq 0 ] || die "review.md has unanswered items"
+  [ -n "$pr" ] || pr="$(fm_get "$QUESTS/$(root_of "$slug")/quest.md" pr)"
+  [ -n "$pr" ] || die "done <slug> <pr-url>: open the PR first"
+  fm_set "$f" state done
+  fm_set "$f" done "$(date '+%Y-%m-%d')"
+  fm_set "$f" pr "$pr"
+  append_log "$slug" main "done, PR $pr"
+  say "done $slug, PR $pr. After the owner merges, '$CLI tidy' removes the quest"
+  banner "$slug"
+}
+
+forget() { rm -rf "${QUESTS:?}/${1:?}" "$(wdir "$1")"; rmdir "$CARRY_HOME/work/$NAME" 2>/dev/null; return 0; }
+
+in_use() {
+  local u f
+  for u in $(used_by "$1"); do
+    f="$(ddir "$u")/quest.md"
+    [ -f "$f" ] && in_set "$(fm_get "$f" state)" draft approved done && printf '%s\n' "$u"
+  done
+}
+
+cmd_drop() {
+  need_root
+  local slug="$1" f root kids d rp wt br start
+  f="$(quest_file "$slug")" || exit 1
+  kids="$(children_of "$slug")"
+  [ -z "$kids" ] || die "follow-ups build on '$slug': drop them first ($(echo $kids))"
+  kids="$(in_use "$slug")"
+  [ -z "$kids" ] || die "$(echo $kids) in another repo uses '$slug': drop it first, or take the use out of its plan"
+  root="$(root_of "$slug")"; rp="$(repo_path "$(quest_repo "$slug")")"; wt="$(wt_of "$slug")"; br="$(branch_of "$slug")"
+  ALL=1; cmd_down "$slug" >/dev/null 2>&1
+  if [ "$slug" = "$root" ]; then
+    [ -d "$wt" ] && git -C "$rp" worktree remove --force "$wt"
+    git -C "$rp" show-ref --verify --quiet "refs/heads/$br" && git -C "$rp" branch -D "$br" >/dev/null && say "deleted worktree and branch $br"
+  else
+    start="$(fm_get "$f" start)"
+    if [ -n "$start" ] && [ -d "$wt" ]; then
+      git -C "$wt" reset --quiet --hard "$start" && say "branch $br reset to $start, before this follow-up"
+    fi
+  fi
+  [ -n "$(fm_get "$QUESTS/$root/quest.md" pr)" ] && say "a PR exists ($(fm_get "$QUESTS/$root/quest.md" pr)): close or update it on the forge"
+  forget "$slug"
+  say "dropped $slug: its quest and work files are deleted"
+}
+
+is_merged() {
+  local rp="$1" br="$2" base="$3" pr="$4" st
+  git -C "$rp" merge-base --is-ancestor "$br" "$base" 2>/dev/null && return 0
+  if [ -n "$pr" ] && command -v gh >/dev/null 2>&1; then
+    st="$(cd "$rp" && gh pr view "$pr" --json state -q .state 2>/dev/null)"
+    [ "$st" = MERGED ] && return 0
+  fi
+  return 1
+}
+
+tidy_one() {
+  local wt="$1" root="$2" base="$3" rp="$ROOT" f br dirty d busy
+  f="$QUESTS/$root/quest.md"; br="$root"
+  dirty="$(git -C "$wt" status --porcelain 2>/dev/null | grep -v '^?? \.carry/')"
+  if [ -n "$dirty" ]; then
+    say "keep $root: uncommitted changes in $wt, the owner decides:"; printf '%s\n' "$dirty" | sed 's/^/    /'
+    return 1
+  fi
+  busy="$(for d in $(chain_of "$root"); do in_set "$(fm_get "$QUESTS/$d/quest.md" state)" draft approved && echo "$d"; in_use "$d"; done)"
+  if [ -n "$busy" ]; then say "keep $root: in progress ($(echo $busy))"; return 1; fi
+  if ! is_merged "$rp" "$br" "$base" "$(fm_get "$f" pr)"; then
+    say "keep $root: not merged ($(fm_get "$f" state)$( [ -n "$(fm_get "$f" pr)" ] && echo ", PR $(fm_get "$f" pr)"))"
+    return 1
+  fi
+  for d in $(chain_of "$root"); do ALL=1; cmd_down "$d" >/dev/null 2>&1; done
+  git -C "$rp" worktree remove --force "$wt"
+  git -C "$rp" branch -D "$br" >/dev/null 2>&1
+  for d in $(chain_of "$root"); do forget "$d"; done
+  say "cleaned $root: merged. Worktree, branch, sandboxes, quest and work files removed; the PR is the record"
+}
+
+cmd_tidy() {
+  need_root
+  local wt br root base list cleaned=0 kept=0
+  base="$(base_ref)"
+  case "$base" in origin/*) git -C "$ROOT" fetch --quiet origin 2>/dev/null ;; esac
+  git -C "$ROOT" worktree prune 2>/dev/null
+  list="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree / { w = substr($0, 10) } /^branch / { print w "\t" $2 }')"
+  while IFS="$(printf '\t')" read -r wt br; do
+    [ -n "$br" ] || continue
+    root="${br#refs/heads/}"
+    [ -f "$QUESTS/$root/quest.md" ] && [ -z "$(parent_of "$root")" ] || continue
+    if tidy_one "$wt" "$root" "$base"; then cleaned=$((cleaned+1)); else kept=$((kept+1)); fi
+  done <<< "$list"
+  say "tidy: $cleaned cleaned, $kept kept, base $base"
+}
+
+write_brief() {
+  local role="$1" slug="$2" out="$3" f prev bf u
+  f="$QUESTS/$slug/quest.md"
+  {
+    printf -- '---\nkind: brief\nrole: %s\nquest: %s\nrepo: %s\nround: %s\nhash: %s\nentry_skill: %s\nworktree: %s\n' \
+      "$role" "$slug" "$(quest_repo "$slug")" "$ROUND" "$(fm_get "$f" hash)" "$ENTRY_SKILL" "$(wt_of "$slug")"
+    if [ -f "$(rules_of "$(quest_repo "$slug")")" ]; then printf 'repo_rules: %s\n' "$(rules_of "$(quest_repo "$slug")")"
+    else printf 'repo_rules: none yet. Work from the repo itself and say so in your report\n'; fi
+    if [ "$role" = build ]; then
+      printf 'sandbox: %s\ncheck: %s exec %s check\nreport: %s\n---\n' \
+        "$(env_file "$slug" "")" "$CLI" "$slug" "$(wdir "$slug")/build-$ROUND.md"
+      printf '## Read\n- quest: %s (every Task section, Diagnosis if present, Contract if present)\n' "$f"
+      for u in $(uses_of "$slug"); do printf -- '- uses %s (repo %s): build against its Contract in %s\n' "$u" "$(quest_repo "$u")" "$(ddir "$u")/quest.md"; done
+      [ -n "$(parent_of "$slug")" ] && printf -- '- a follow-up of %s: its work is already on this branch. Build only this plan\n' "$(parent_of "$slug")"
+      grep -q '^- reopened:' "$f" && printf -- '- reopened: an earlier build of this quest is on the branch, possibly partial. Diff against the base first; keep what fits this plan, redo what does not\n'
+      [ "$(fm_get "$f" weight)" = side ] && printf -- '- side quest: no verifier follows. Your You see evidence, before and after, is the proof\n'
+      printf -- '- report template: %s/build-report.md\n\n## Findings to fix\n' "$TEMPLATES"
+      prev="$(wdir "$slug")/verify-$((ROUND-1)).md"
+      if [ "$ROUND" -gt 1 ] && [ -f "$prev" ]; then
+        section "$prev" Results | awk -F'|' '/^\|/ { n++; if (n <= 2) { print; next } m=$5; gsub(/[[:space:]]/, "", m); if (m == "defect" || m == "test" || m == "server") print }'
+      else
+        printf 'none\n'
+      fi
+      printf '\n## Review bounces\n'
+      if [ "$ROUND" -gt 1 ] && [ "$(bounces "$slug")" -gt 0 ]; then
+        section "$QUESTS/$slug/review.md" Items | awk -F'|' '/^\|/ { n++; if (n <= 2) { print; next } v=$6; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); if (v ~ /^bounce/) print }'
+      else
+        printf 'none\n'
+      fi
+    else
+      printf 'sandbox: %s\nreport: %s\nscenarios: %s/scenarios/\n---\n' "$(env_file "$slug" verify)" "$(wdir "$slug")/verify-$ROUND.md" "$(wdir "$slug")"
+      printf '## Read\n- quest: %s (the summary, Contract, and every You see and Verify, live box)\n- report template: %s/verify-report.md\n' "$f" "$TEMPLATES"
+      for u in $(uses_of "$slug"); do
+        printf -- '- uses %s (repo %s): its Contract is in %s. Bring it up with `%s prep %s --as verify` and `%s up %s --as verify`, then check end to end\n' "$u" "$(quest_repo "$u")" "$(ddir "$u")/quest.md" "$CLI" "$u" "$CLI" "$u"
+      done
+      prev="$(wdir "$slug")/verify-$((ROUND-1)).md"
+      [ "$ROUND" -gt 1 ] && [ -f "$prev" ] && printf -- '- previous report, after writing Expectations: %s\n' "$prev"
+      printf '\n## Disputes from the builder\n'
+      bf="$(wdir "$slug")/build-$ROUND.md"
+      if [ -f "$bf" ] && [ -n "$(section "$bf" Disputes | trim | grep -v '^$' | grep -vx 'none')" ]; then
+        section "$bf" Disputes
+      else
+        printf 'none\n'
+      fi
+    fi
+  } > "$out"
+}
+
+cmd_spawn() {
+  need_root
+  local role="$1" slug="$2" agent tool model flags brief cwd prompt log tools f rc rules u
+  case "$role" in
+    build) agent=builder ;;
+    verify) agent=verifier ;;
+    *) die "role must be build or verify" ;;
+  esac
+  f="$(quest_file "$slug")" || exit 1
+  [ "$(fm_get "$f" state)" = approved ] || die "'$slug' is not approved"
+  edited "$f" && ! started "$slug" && die "quest.md changed since approval: the owner re-confirms, then '$CLI approve $slug'"
+  edited "$f" && die "quest.md changed after building started: undo the edit, and put new work in a follow-up"
+  [ "$role" = verify ] && [ ! -f "$(wdir "$slug")/build-$ROUND.md" ] && die "no build report for round $ROUND: a verifier only checks a finished build round"
+  [ "$role" = verify ] && [ "$(fm_get "$f" weight)" = side ] && die "'$slug' is a side quest: no verifier. The builder's evidence and the owner's diff review are the check"
+  cwd="$(wt_of "$slug")"; [ -d "$cwd" ] || die "no worktree: run '$CLI prep $slug'"
+  brief="$(work_dir "$slug")/brief-$role-$ROUND.md"
+  [ -f "$brief" ] || write_brief "$role" "$slug" "$brief"
+  rules="$(rules_of "$(quest_repo "$slug")")"
+  tool="$(cfgd "role.$role" tool claude)"
+  model="$(cfg "role.$role" model)"
+  flags="$(cfg "role.$role" flags)"
+  prompt="You are the $agent for quest $slug, round $ROUND. Read $PLUGIN_ROOT/agents/$agent.md, then your brief at $brief, and follow them exactly. The '$CLI' command is on your PATH. Write only the files your role and the brief name."
+  log="$(wdir "$slug")/$role-$ROUND.log"
+  local -a cmd
+  case "$tool" in
+    claude)
+      case "$role" in
+        build) tools="Read Grep Glob Edit Write Bash" ;;
+        verify) tools="Read Grep Glob Write Bash" ;;
+      esac
+      cmd=(claude -p "$prompt" --permission-mode acceptEdits --add-dir "$ROOT/$HOME_DIR" --add-dir "$(wdir "$slug")" --add-dir "$PLUGIN_ROOT")
+      case "$rules" in "$ROOT/$HOME_DIR"/*) ;; *) [ -f "$rules" ] && cmd+=(--add-dir "$(dirname "$rules")") ;; esac
+      for u in $(uses_of "$slug"); do cmd+=(--add-dir "$(repo_path "${u%%:*}")/$HOME_DIR"); done
+      [ -n "$model" ] && cmd+=(--model "$model")
+      cmd+=(--allowedTools $tools)
+      ;;
+    codex)
+      cmd=(codex exec -s workspace-write --add-dir "$ROOT/$HOME_DIR" --add-dir "$(wdir "$slug")" -c sandbox_workspace_write.network_access=true)
+      for u in $(uses_of "$slug"); do cmd+=(--add-dir "$(repo_path "${u%%:*}")/$HOME_DIR"); done
+      [ -n "$model" ] && cmd+=(-m "$model")
+      ;;
+    *) die "role.$role tool must be claude or codex" ;;
+  esac
+  [ -n "$flags" ] && cmd+=($flags)
+  [ "$tool" = codex ] && cmd+=("$prompt")
+  if [ "${CARRY_DRY_RUN:-0}" = 1 ]; then
+    printf 'cd %q &&' "$cwd"; printf ' %q' "${cmd[@]}"; printf '\n'; return 0
+  fi
+  command -v "$tool" >/dev/null 2>&1 || die "$tool is not on PATH"
+  export CARRY_ROLE="$role" CARRY_REPO="$ROOT" PATH="$PLUGIN_ROOT/bin:$PATH"
+  if [ "$BG" -eq 1 ]; then
+    local pf="$(wdir "$slug")/spawn-$role-$ROUND.pid" max waited=0
+    max="$(cfgd carry max_parallel 3)"
+    while [ "$(running_spawns)" -ge "$max" ]; do
+      [ "$waited" -eq 0 ] && say "waiting: $max agents already running (max_parallel)"
+      waited=1; sleep 5
+    done
+    rm -f "$log.rc"
+    ( cd "$cwd" && exec nohup bash -c '"$@" > "$0" 2>&1; echo $? > "$0.rc"' "$log" "${cmd[@]}" ) </dev/null >/dev/null 2>&1 &
+    printf '%s\n' "$!" > "$pf"
+    append_log "$slug" main "spawned $role, round $ROUND, $tool${model:+ $model}, background"
+    say "spawned $role, $slug, round $ROUND, pid $(cat "$pf"), log $log"
+    banner "$slug"
+    return 0
+  fi
+  printf '%s\n' "$$" > "$(wdir "$slug")/spawn-$role-$ROUND.pid"
+  local t0; t0="$(date +%s)"
+  (cd "$cwd" && "${cmd[@]}") > "$log" 2>&1; rc=$?
+  rm -f "$(wdir "$slug")/spawn-$role-$ROUND.pid"
+  append_log "$slug" main "$role, round $ROUND, $tool${model:+ $model}, exit $rc, $(fmt_elapsed $(( $(date +%s) - t0 )))"
+  say "$role, $slug, round $ROUND, exit $rc, $(fmt_elapsed $(( $(date +%s) - t0 ))), log $log"
+  banner "$slug"
+  return "$rc"
+}
+
+spawn_pids() {
+  local pf
+  for pf in "$CARRY_HOME/work"/*/*/spawn-*.pid; do
+    [ -f "$pf" ] && kill -0 "$(cat "$pf")" 2>/dev/null && printf '%s\t%s\n' "$(basename "$(dirname "$(dirname "$pf")")")" "$pf"
+  done
+}
+
+running_spawns() { spawn_pids | grep -c . ; }
+
+cmd_wait() {
+  need_root
+  local slug="$1" pf label rc worst=0 p
+  for pf in "$(wdir "$slug")"/spawn-*.pid; do
+    [ -f "$pf" ] || continue
+    label="$(basename "$pf" .pid)"; label="${label#spawn-}"
+    p="$(cat "$pf")"
+    while kill -0 "$p" 2>/dev/null; do sleep 5; done
+    rc="$(cat "$(wdir "$slug")/$label.log.rc" 2>/dev/null || echo '?')"
+    append_log "$slug" main "$label finished, exit $rc, $(fmt_elapsed $(( $(date +%s) - $(mtime "$pf") )))"
+    say "$slug $label, exit $rc, $(fmt_elapsed $(( $(date +%s) - $(mtime "$pf") )))"
+    [ "$rc" = 0 ] || worst=1
+    rm -f "$pf"
+  done
+  return "$worst"
+}
+
+wt_base() {
+  expand "$(cfgd carry worktrees "$CARRY_HOME/worktrees")" "$CARRY_HOME"
+}
+
+repo_wts() { git -C "$1" worktree list --porcelain 2>/dev/null | awk -v pre="$2/" '/^worktree / { w = substr($0, 10) } /^branch / { if (index(w, pre) == 1) print w "\t" substr($2, 12) } /^detached/ { if (index(w, pre) == 1) print w "\t" }'; }
+
+unpushed() {
+  local rp="$1" br="$2" base="$3" up n
+  up="$(git -C "$rp" rev-parse --abbrev-ref "$br@{upstream}" 2>/dev/null)"
+  if [ -n "$up" ]; then n="$(git -C "$rp" rev-list --count "$up..$br" 2>/dev/null)"; else n="$(git -C "$rp" rev-list --count "$base..$br" 2>/dev/null)"; fi
+  printf '%s' "${n:-0}"
+}
+
+dirty_wts() { local wt br; while IFS="$(printf '\t')" read -r wt br; do [ -n "$wt" ] && [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | grep -v "^?? $HOME_DIR/")" ] && printf '%s\n' "$wt"; done <<< "$1"; }
+
+no_agents() {
+  local busy; busy="$(spawn_pids | cut -f2)"
+  [ -z "$busy" ] || die "agents are running on this machine: $(echo $busy). Wait for them ('$CLI wait <slug>') or stop them, then throw"
+}
+
+sandboxed() { local e; for e in "$CARRY_HOME/work/$1"/*/sandbox*.env; do [ -f "$e" ] && basename "$(dirname "$e")"; done | sort -u; }
+
+throw_skips() {
+  local n tmp
+  n="$(reg_rows skip | grep -c .)"
+  [ "$n" -gt 0 ] || { say "no skips remembered"; return 0; }
+  say "throw: forget $n remembered skip(s), so setup is offered for them again:"
+  reg_rows skip | cut -f1 | sed 's/^/  /'
+  [ "$YES" -eq 1 ] || { say "nothing removed yet. Re-run with --yes to throw"; return 0; }
+  tmp="$(mktemp)"
+  awk '/^\[/ { cur=$0; print; next } cur == "[skip]" && /=/ { next } { print }' "$REG" > "$tmp" && cat "$tmp" > "$REG"; rm -f "$tmp"
+  say "forgot $n skip(s)"
+}
+
+throw_repo() {
+  need_root
+  local wts wt br n s base tracked dirty users q
+  no_agents
+  base="$(base_ref)"
+  wts="$(repo_wts "$ROOT" "$WTS")"
+  dirty="$(dirty_wts "$wts")"
+  n="$(ls -d "$QUESTS"/*/ 2>/dev/null | grep -c .)"
+  users="$(for q in "$QUESTS"/*/; do [ -d "$q" ] && in_use "$(basename "$q")"; done | sort -u)"
+  s="$(sandboxed "$NAME")"
+  say "throw $NAME ($ROOT):"
+  say "  remove $ROOT/$HOME_DIR: config, rules and $n quest(s), and their work files in $CARRY_HOME/work/$NAME"
+  [ -n "$wts" ] && { say "  remove worktrees:"; printf '%s\n' "$wts" | cut -f1 | sed 's/^/    /'; }
+  [ -n "$s" ] && say "  stop servers and drop databases for: $(echo $s)"
+  say "  unregister $NAME from $REG"
+  say "  keep: your code and every branch"
+  while IFS="$(printf '\t')" read -r wt br; do
+    [ -n "$br" ] || continue
+    [ "$(unpushed "$ROOT" "$br" "$base")" = 0 ] || say "  note: branch $br has commits not pushed. The branch is kept"
+  done <<< "$wts"
+  [ -z "$dirty" ] || { say "refused: uncommitted work in:"; printf '%s\n' "$dirty" | sed 's/^/  /'; die "commit, stash or discard it first. Nothing was removed"; }
+  [ -z "$users" ] || die "refused: quests in other repos still use this repo's quests: $(echo $users). Finish or drop them first. Nothing was removed"
+  [ "$YES" -eq 1 ] || { say "nothing removed yet. Re-run with --yes to throw"; return 0; }
+  for s in $s; do ALL=1; cmd_down "$s" >/dev/null 2>&1; done
+  while IFS="$(printf '\t')" read -r wt br; do [ -n "$wt" ] && git -C "$ROOT" worktree remove --force "$wt"; done <<< "$wts"
+  git -C "$ROOT" worktree prune 2>/dev/null
+  tracked="$(git -C "$ROOT" ls-files "$HOME_DIR" 2>/dev/null | head -1)"
+  rm -rf "${ROOT:?}/$HOME_DIR" "$CARRY_HOME/work/$NAME"
+  reg_edit repos "$NAME" ""
+  say "thrown: $NAME. Set it up again any time with the setup skill"
+  [ -z "$tracked" ] || say "$HOME_DIR/ was committed in this repo: commit its removal, or 'git checkout -- $HOME_DIR' to bring it back"
+}
+
+throw_all() {
+  local base n p wts wt br s nr ns rbase dirty="" orphans w e pf
+  CFG=""
+  no_agents
+  base="$(wt_base)"
+  nr="$(reg_rows repos | grep -c .)"; ns="$(reg_rows skip | grep -c .)"
+  say "throw everything carry keeps on this machine:"
+  say "  remove the machine config, the registry ($nr repo(s), $ns skip(s)) and all work files in $CARRY_HOME"
+  while IFS="$(printf '\t')" read -r n p; do
+    git -C "$p" rev-parse --git-dir >/dev/null 2>&1 || continue
+    rbase="$(cfg_in "$p/$CONFIG_NAME" repo base)"; [ -n "$rbase" ] || rbase=origin/main
+    wts="$(repo_wts "$p" "$base/$n")"
+    dirty="$dirty$(dirty_wts "$wts")"
+    s="$(sandboxed "$n")"
+    [ -n "$s" ] && say "  $n: stop servers and drop databases for: $(echo $s)"
+    while IFS="$(printf '\t')" read -r wt br; do
+      [ -n "$br" ] || continue
+      say "  $n: remove worktree $wt"
+      [ "$(unpushed "$p" "$br" "$rbase")" = 0 ] || say "  note: $n branch $br has commits not pushed. The branch is kept"
+    done <<< "$wts"
+  done <<< "$(reg_rows repos)"
+  orphans="$(for w in "$CARRY_HOME/work"/*/; do [ -d "$w" ] || continue; n="$(basename "$w")"; p="$(reg_get "$n")"; [ -n "$p" ] && [ -f "$p/$CONFIG_NAME" ] || printf '%s\n' "$n"; done)"
+  for n in $orphans; do
+    for e in "$CARRY_HOME/work/$n"/*/sandbox*.env; do [ -f "$e" ] && say "  $n (no longer set up): stop its server; drop database $(sed -n 's/^DB=//p' "$e") yourself"; done
+  done
+  say "  keep: each repo's $HOME_DIR/ ('$CLI throw' inside a repo removes one), your code and every branch"
+  [ -z "$dirty" ] || { say "refused: uncommitted work in:"; printf '%s\n' "$dirty" | grep -v '^$' | sed 's/^/  /'; die "commit, stash or discard it first. Nothing was removed"; }
+  [ "$YES" -eq 1 ] || { say "nothing removed yet. Re-run with --yes to throw"; return 0; }
+  while IFS="$(printf '\t')" read -r n p; do
+    git -C "$p" rev-parse --git-dir >/dev/null 2>&1 || continue
+    if [ -f "$p/$CONFIG_NAME" ]; then for s in $(sandboxed "$n"); do CARRY_REPO="$p" "$SELF" down "$s" --all >/dev/null 2>&1; done; fi
+    while IFS="$(printf '\t')" read -r wt br; do [ -n "$wt" ] && git -C "$p" worktree remove --force "$wt"; done <<< "$(repo_wts "$p" "$base/$n")"
+    git -C "$p" worktree prune 2>/dev/null
+    rmdir "$base/$n" 2>/dev/null
+  done <<< "$(reg_rows repos)"
+  for n in $orphans; do for pf in "$CARRY_HOME/work/$n"/*/server*.pid; do [ -f "$pf" ] && stop_pid "$pf"; done; done
+  rm -f "$MCFG" "$REG"
+  rm -rf "$CARRY_HOME/work"
+  rmdir "$base" "$CARRY_HOME/worktrees" "$CARRY_HOME" 2>/dev/null
+  say "thrown: the machine config and the registry. The next setup asks the machine questions again"
+  if [ -d "$base" ] && [ -n "$(ls -A "$base" 2>/dev/null)" ]; then say "left in place, not carry worktrees of a registered repo: $(ls -A "$base" | tr '\n' ' ')in $base. Delete them yourself if you no longer need them"; fi
+  [ ! -d "$CARRY_HOME/worktrees" ] || [ "$base" = "$CARRY_HOME/worktrees" ] || say "left in place: $CARRY_HOME/worktrees, from an earlier worktrees setting"
+  return 0
+}
+
+cmd_throw() {
+  if [ "$SKIPS" -eq 1 ]; then throw_skips
+  elif [ "$ALL" -eq 1 ]; then throw_all
+  else throw_repo; fi
+}
+
+cmd_doctor() {
+  local t n p
+  say "plugin   $PLUGIN_ROOT"
+  if command -v "$CLI" >/dev/null 2>&1; then say "cli      on PATH"; else say "cli      not on PATH - ln -s $PLUGIN_ROOT/bin/$CLI ~/.local/bin/$CLI"; fi
+  say "bash     $BASH_VERSION"
+  for t in git gh claude codex; do
+    if command -v "$t" >/dev/null 2>&1; then say "$(printf '%-8s' "$t") $(command -v "$t")"; else say "$(printf '%-8s' "$t") missing"; fi
+  done
+  if [ -f "$MCFG" ]; then say "machine  $MCFG"; else say "machine  $MCFG missing: the setup skill asks for it once"; fi
+  say "registry $REG, $(reg_rows repos | grep -c .) repo(s), $(reg_rows skip | grep -c .) skip(s)"
+  while IFS="$(printf '\t')" read -r n p; do [ -n "$p" ] && [ ! -f "$p/$CONFIG_NAME" ] && say "missing  $n, $p: set it up again, or '$CLI throw' there"; done <<< "$(reg_rows repos)"
+  find_root >/dev/null || { say "repo     none at $PWD: the setup skill, or '$CLI init'"; return 0; }
+  need_root
+  say "repo     $NAME, $ROOT"
+  [ -f "$(rules_of)" ] || say "         no rules file yet: run the setup skill here"
+  for t in build verify; do say "role     $t, $(cfgd "role.$t" tool claude), $(cfgd "role.$t" model default)"; done
+  say "wt       $WTS, max_parallel $(cfgd carry max_parallel 3)"
+}
+
+main() {
+  local c="${1:-}" i=0 r p a; [ $# -gt 0 ] && shift
+  parse_flags "$@"
+  [ "$c" = spawn ] && i=1
+  r="${POS[$i]:-}"
+  case "$c" in
+    quest|approve|status|log|sync|done|drop|reopen|prep|up|review|down|exec|diff|spawn|wait)
+      if is_ref "$r"; then
+        printf '%s' "${r%%:*}" | grep -Eq '^[A-Za-z0-9._-]+$' || die "'$r': name a quest in another repo as <repo>:<slug>"
+        p="$(reg_get "${r%%:*}")"
+        [ -n "$p" ] && [ -f "$p/$CONFIG_NAME" ] || die "no repo '${r%%:*}' set up on this machine: the setup skill in that repo first"
+        local -a args=()
+        for a in "$@"; do if [ "$a" = "$r" ]; then args+=("${r##*:}"); else args+=("$a"); fi; done
+        CARRY_REPO="$p" exec "$SELF" "$c" "${args[@]}"
+      fi
+      ;;
+  esac
+  set -- "${POS[@]}"
+  case "$c" in
+    root) say "$PLUGIN_ROOT" ;;
+    init) cmd_init ;;
+    where) cmd_where ;;
+    repos) cmd_repos ;;
+    scan) [ $# -ge 1 ] || die "scan <dir> [dir...]"; cmd_scan "$@" ;;
+    skip) [ $# -eq 1 ] || die "skip <dir>"; cmd_skip "$1" ;;
+    throw) [ $# -eq 0 ] || die "throw [--skips | --all] [--yes]"; cmd_throw ;;
+    quest) [ $# -eq 1 ] || die "quest <slug> [--continues <slug>] [--uses <repo:slug>]"; cmd_quest "$1" ;;
+    lint) cmd_lint "$@" ;;
+    approve) [ $# -eq 1 ] || die "approve <slug> [--self]"; cmd_approve "$1" ;;
+    status) cmd_status "${1:-}" ;;
+    log) [ $# -ge 2 ] || die "log <slug> <line>"; cmd_log "$@" ;;
+    sync) [ $# -eq 1 ] || die "sync <slug>"; cmd_sync "$1" ;;
+    done) [ $# -ge 1 ] || die "done <slug> [pr-url]"; cmd_done "$1" "${2:-}" ;;
+    drop) [ $# -eq 1 ] || die "drop <slug>"; cmd_drop "$1" ;;
+    reopen) [ $# -ge 1 ] || die "reopen <slug> \"<why>\""; cmd_reopen "$1" "${2:-}" ;;
+    tidy) cmd_tidy ;;
+    prep) [ $# -eq 1 ] || die "prep <slug> [--as verify]"; cmd_prep "$1" ;;
+    up) [ $# -eq 1 ] || die "up <slug>"; cmd_up "$1" ;;
+    review) [ $# -eq 1 ] || die "review <slug>"; cmd_review "$1" ;;
+    down) [ $# -eq 1 ] || die "down <slug>"; cmd_down "$1" ;;
+    exec) [ $# -eq 2 ] || die "exec <slug> <key>"; cmd_exec "$1" "$2" ;;
+    diff) [ $# -eq 1 ] || die "diff <slug>"; cmd_diff "$1" ;;
+    spawn) [ $# -eq 2 ] || die "spawn <build|verify> <slug>"; cmd_spawn "$1" "$2" ;;
+    wait) [ $# -eq 1 ] || die "wait <slug>"; cmd_wait "$1" ;;
+    doctor) cmd_doctor ;;
+    ""|-h|--help|help) usage ;;
+    *) die "unknown command '$c' - '$CLI help'" ;;
+  esac
+}
+
+main "$@"

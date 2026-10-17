@@ -1,0 +1,20 @@
+# .carry/repo.toml - this repo's carry settings. carry finds it from anywhere in the repo or its worktrees.
+# Other repos reach this one by its name, e.g. a quest that uses api:export-csv.
+# Placeholders: {port} {db} {wt} {log} {slug} {repo}, and {port:<repo>} for a repo this quest uses.
+
+[repo]
+name          = "{name}"
+base          = "origin/main"
+check         = "make verify"
+lint          = "golangci-lint run"
+seed          = "DATABASE_URL=postgres:///{db} make seed"
+seed_after_up = "BASE=http://127.0.0.1:{port} ./scripts/seed-fixtures.sh"
+run           = "PORT={port} DATABASE_URL=postgres:///{db} make run"
+logs          = "tail -n 200 {log}"
+review_port   = "8080"
+# Optional: db_prefix = "{name}" (sandbox database names start with it), rules = ".carry/rules.md" (another path for the rules file).
+
+# A repo with no database leaves both empty.
+[sandbox]
+create = "createdb {db}"
+drop   = "dropdb --if-exists {db}"

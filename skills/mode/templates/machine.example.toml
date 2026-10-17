@@ -1,0 +1,19 @@
+# ~/.carry/config.toml - this machine's carry settings, shared by every repo set up here.
+# The setup skill fills it in the first time. A repo can override only a [role.*] section, as a whole, in its .carry/repo.toml.
+# Format: [sections], key = "string". Use single quotes inside command strings.
+
+[carry]
+owner        = "your-name"
+worktrees    = "~/.carry/worktrees"
+max_parallel = 3
+
+# Who plays build and verify. tool = claude | codex. Empty model = the tool's default.
+# Recommended: the verifier runs on a different model from the builder. Your choice.
+[role.build]
+tool  = "claude"
+model = "opus"
+# Optional: flags = "--extra-flag" (added to the tool command line)
+
+[role.verify]
+tool  = "claude"
+model = "sonnet"

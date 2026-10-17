@@ -1,0 +1,14 @@
+{
+  "name": "mikey",
+  "owner": {
+    "name": "mikey"
+  },
+  "plugins": [
+    {
+      "name": "carry",
+      "source": "./",
+      "description": "Plan, build and prove product changes across one or more repos, with the owner confirming plans and reviewing results."
+    }
+  ],
+  "description": "Marketplace for the carry plugin."
+}
