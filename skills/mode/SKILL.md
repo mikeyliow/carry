@@ -60,7 +60,7 @@ A quest is a **main quest** when any is true. Otherwise it is a **side quest**. 
 
 ## Skills
 
-The owner has four slash commands. Everything else is internal: reached through routing, never typed.
+The owner has five slash commands. Everything else is internal: reached through routing, never typed. Sweep runs only when the owner types it; never start it yourself.
 
 | Command | For the owner |
 |---|---|
@@ -68,6 +68,7 @@ The owner has four slash commands. Everything else is internal: reached through 
 | `/carry:setup` | set up or refresh one repo. Usually offered, rarely typed |
 | `/carry:checkin` | where every quest stands, with time estimates |
 | `/carry:pass-the-ball` | hand this session to a new one, or pick up a handoff |
+| `/carry:sweep` | clean the codebase: PII and secrets, comments, tests that pin business logic, stray files. Reports first, changes only what the owner picks |
 
 Internal skills:
 

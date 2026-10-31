@@ -182,13 +182,14 @@ add CSV export to holdings, API and web
 
 carry checks every folder you added. A repo that is not set up gets one question: set it up now, or skip it as a reference. It remembers a skip, so you are not asked again. Folders that are not git repos, like specs or docs, are just read.
 
-You have four slash commands. carry picks the flow for everything else:
+You have five slash commands. carry picks the flow for everything else:
 
 ```
 /carry:mode           anything: "fix the CSV export totals", "why did yesterday's import fail", "reseed staging"
 /carry:setup          set up or refresh one repo (carry offers it when a code change needs it)
 /carry:checkin        where every quest stands: done, running with a time estimate, left, blocked, you
 /carry:pass-the-ball  hand this session to a new one; run it again in the new session to pick it up
+/carry:sweep          clean the codebase: PII and secrets, comments, tests that pin business logic, stray files. Reports first; you pick what goes
 ```
 
 Screen checks default to repeatable scripts on a small harness in `.carry/ui/`. A plan can choose `ui: agent` instead: no scripts, the agent drives its own browser tool and judges the screenshots. Set a repo's default with `ui_driver` in `repo.toml`.
@@ -261,6 +262,7 @@ skills/
   build/           carry as orchestrator: builders, verifiers, the review
   checkin/         a progress check-in in a fixed shape
   pass-the-ball/   hand a session to the next one
+  sweep/           owner-run codebase cleanup
   verify/          the independent verifier
 agents/            builder, verifier, checker
 hooks/             session-start, prompt-status (the per-turn status line), commit-guard
