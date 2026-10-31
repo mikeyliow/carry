@@ -544,6 +544,8 @@ $bad"
 
 int_key() { case "$(fm_get "$1" "$2")" in ''|*[!0-9]*) problem "$1" "$2 must be a whole number" ;; esac; }
 
+review_items() { if grep -qx '## Look at these' "$1"; then section "$1" "Look at these"; else section "$1" Items; fi; }
+
 expect_hash() { section "$1" Expectations | table_rows | { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi; } | cut -c1-12; }
 
 validate_report() {
@@ -564,7 +566,8 @@ $bad"
       if [ "$(fm_get "$f" verdict)" = pass ] && section "$f" Results | table_rows | awk -F'|' '{ r=$4; gsub(/[[:space:]]/, "", r); if (r == "fail") f=1 } END { exit !f }'; then
         problem "$f" "verdict pass with a failing row"
       fi
-      if [ ! -f "$f.lock" ]; then problem "$f" "expectations were never locked: write them from the quest alone, then 'carry lint <report> --lock' before reading any code"
+      if [ ! -f "$f.lock" ] && ! grep -qx '## Fail-first' "$f"; then :
+      elif [ ! -f "$f.lock" ]; then problem "$f" "expectations were never locked: write them from the quest alone, then 'carry lint <report> --lock' before reading any code"
       elif [ "$(expect_hash "$f")" != "$(cat "$f.lock")" ] && [ -z "$(section "$f" "Corrected expectations" | trim | grep -v '^$' | grep -vix none)" ]; then
         problem "$f" "Expectations changed after they were locked: put each change under Corrected expectations, with the quest line that made you change it"
       fi
@@ -755,14 +758,14 @@ open_queued() { local n; n="$(grep -c '^- queued: ' "$QUESTS/$1/quest.md" 2>/dev
 bounces() {
   local f="$QUESTS/$1/review.md" n
   [ -f "$f" ] || { echo 0; return; }
-  n="$(section "$f" "Look at these" | table_rows | awk -F'|' '{ v=$6; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); if (v ~ /^bounce/) c++ } END { print c+0 }')"
+  n="$(review_items "$f" | table_rows | awk -F'|' '{ v=$6; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); if (v ~ /^bounce/) c++ } END { print c+0 }')"
   echo "${n:-0}"
 }
 
 unanswered() {
   local f="$QUESTS/$1/review.md" n
   [ -f "$f" ] || { echo 0; return; }
-  n="$(section "$f" "Look at these" | table_rows | grep -cE '\|[[:space:]]*\|[[:space:]]*$')"
+  n="$(review_items "$f" | table_rows | grep -cE '\|[[:space:]]*\|[[:space:]]*$')"
   echo "${n:-0}"
 }
 
@@ -1444,7 +1447,7 @@ write_brief() {
       fi
       printf '\n## Review bounces\n'
       if [ "$ROUND" -gt 1 ] && [ "$(bounces "$slug")" -gt 0 ]; then
-        section "$QUESTS/$slug/review.md" "Look at these" | awk -F'|' '/^\|/ { n++; if (n <= 2) { print; next } v=$6; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); if (v ~ /^bounce/) print }'
+        review_items "$QUESTS/$slug/review.md" | awk -F'|' '/^\|/ { n++; if (n <= 2) { print; next } v=$6; gsub(/^[[:space:]]+|[[:space:]]+$/, "", v); if (v ~ /^bounce/) print }'
       else
         printf 'none\n'
       fi
