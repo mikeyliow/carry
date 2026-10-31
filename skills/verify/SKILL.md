@@ -11,12 +11,14 @@ user-invocable: false
 
 ## Rounds
 
+A side quest reaches you only as a spot-check: it has no live boxes, so write one scenario per You see box and check it the same way.
+
 Your brief names the round. Round 1 checks the first build. Your failing rows send the builder back for the next round; it may dispute them. A fresh verifier checks that round with your report and the disputes. Two failing rounds in a row stop for the owner. A later round can also follow the owner's review bounce; check it the same way.
 
 ## Steps
 
 1. Read your brief, the quest sections it names, and the `repo_rules:` file it names (how to drive the repo). Never read `build-*` reports or the log. The quest's `hash` must equal your brief's; otherwise stop.
-2. **Expectations before code.** Start your report from `../go/templates/verify-report.md`. Per You see and live box, write what the product must now do, with a confidence (`high` / `med` / `low`), from the quest alone. Reading the code first would check what was built instead of what was asked.
+2. **Expectations before code.** Start your report from `../go/templates/verify-report.md`. Per You see and live box, write what the product must now do, with a confidence (`high` / `med` / `low`), from the quest alone. Reading the code first would check what was built instead of what was asked. Then `carry lint <report> --lock`: it records the Expectations, and lint later rejects any change to them that is not listed under Corrected expectations.
 3. Round 2 and later: now read the previous report named in the brief, and the disputes in your brief. Write fresh expectations first anyway.
 4. **Probe first, once.** Before writing any scenario for a `browser` or `sim` box: `carry up <slug> --as verify`, then take one screenshot. `ui: script`: `carry exec <slug> ui --as verify` runs the harness probe (it runs with every scenario too, as a smoke check). `ui: agent`: open the home page with your browser tool. Fix the harness, not the scenarios, until the probe passes.
    - No browser binary -> look before stopping: the repo rules, `.carry/ui/`, earlier quests' scenarios under `~/.carry/work/<repo>/`, and the Playwright cache (`carry doctor` names it). `npx playwright install chromium` in the worktree when the repo already depends on Playwright. Stop with `infra` only when no binary exists and none can be installed.
@@ -27,11 +29,12 @@ Your brief names the round. Round 1 checks the first build. Your failing rows se
    - `sim` -> launch on the iOS simulator, tap by accessibility label, screenshot at each checkpoint.
    - A pass on `browser` or `sim` needs the assertions **and** your reading of each screenshot against its You see line, written in the evidence column.
    - From the box, not the code. Given: the seed state, by its seeded names; missing state is created through the API, never by writing the database. Steps: method and path, or route and accessible name, or the command. Expect: fields, statuses or screen text, with a tolerance for numbers.
-   - Ports from the `sandbox:` env file in your brief (it exists after `carry prep <slug> --as verify`). Exit 0 only when every expect held. Raw output beside it as `L<n>.out`.
+   - Ports: read `PORT` and `BASE_URL` from the environment, defaulting to your sandbox (`PORT=${PORT:-<port from the sandbox: env file>}`). carry replays your scripts in a fresh sandbox, so never hardcode one. Exit 0 only when every expect held. Raw output beside it as `L<n>.out`.
 6. Bring it up: `carry up <slug> --as verify`.
    - The quest uses another -> first `carry prep <repo>:<slug> --as verify` and `carry up <repo>:<slug> --as verify`, as your brief names them. At least one scenario per contract field crosses the boundary: produced by the used quest, consumed and shown by this one. Check every status the contract allows.
 7. Run the tests the diff touches (`tests the diff touches:` in your brief) and the repo check when it runs in under a few minutes; the PR check runs the full suite. Run every scenario. After each: `carry log <slug> "box: L<n> pass|fail"`, so the owner sees progress.
 8. Read the diff (`carry diff <slug>`) against the Build boxes and to explain failures. Report anything missing or extra.
+   - **Fail-first.** Every test file the diff adds or changes must fail without the change. Check it on the base: `git worktree add <scenarios>/base $(git merge-base HEAD <base>)`, copy those test files in, run them, record the result under Fail-first, then `git worktree remove <scenarios>/base`. A new test that passes on the base proves nothing: a `test` row, unless its box says behaviour stays the same.
 9. Fill **Results**, one row per live box. When an expect fails, ask in order:
    1. Did I misread the quest? -> correct the expectation, re-run, list it under Corrected expectations. Mode `expectation`.
    2. Is the quest silent or ambiguous? -> `spec-gap`. Not your call.

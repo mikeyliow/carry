@@ -35,6 +35,13 @@ Diff against the Build boxes: anything missing, anything extra. Or none. Each fi
 
 The repo check command and its pass count.
 
+## Fail-first
+
+Each test file the diff adds or changes, and its result on the base: `fails` (good) or `passes` (a `test` row).
+
+| test file | on the base |
+|---|---|
+
 ## Corrected expectations
 
 none

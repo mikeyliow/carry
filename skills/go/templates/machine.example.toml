@@ -6,6 +6,8 @@
 owner        = "your-name"
 worktrees    = "~/.carry/worktrees"
 max_parallel = 3
+stall_minutes = 15   # no output or commits this long -> carry wait reports the agent stalled
+spot_check = 5       # a verifier also checks 1 in N side quests; 0 turns it off
 
 # Who plays build and verify. tool = claude | codex. Empty model = the tool's default.
 # Recommended: the verifier runs on a different model from the builder. Your choice.

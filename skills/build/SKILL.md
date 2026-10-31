@@ -42,9 +42,9 @@ Builders log `box: <task> · <box>`, verifiers `box: L<n> pass|fail`. The status
 5. Read the build report: `carry lint` it, then tick each quest box it gives evidence for.
    - `stopped`, `contract-gap`, or a parked box with no default -> stop for the owner.
 6. Check.
-   - **Side quest:** nothing more. Go to step 7.
+   - **Side quest:** nothing more, go to step 7. Unless `carry approve --self` said **spot-check**: then verify it like a main quest, below.
    - **Main quest:**
-     1. `carry prep <slug> --as verify`, spawn the verifier for the same round, `carry lint` its report, tick each live box it passed. A quest that uses another is checked end to end; the brief tells the verifier how.
+     1. `carry prep <slug> --as verify`, spawn the verifier for the same round, `carry lint` its report. Then `carry replay <slug>`: carry reruns the verifier's scripts in a fresh sandbox. Tick a live box only when its replay matches the report. A mismatch -> tick nothing, spawn a fresh verifier for the round, and tell the owner. A quest that uses another is checked end to end; the brief tells the verifier how.
      2. Route each failing row by its mode (the legend is in the verify report):
         - defect, test, server -> spawn the builder for the next round. The CLI hands it the failing rows, and hands its disputes to the next verifier.
         - expectation -> the verifier already corrected it. Not a finding.
@@ -53,7 +53,8 @@ Builders log `box: <task> · <box>`, verifiers `box: L<n> pass|fail`. The status
         - `prerequisite:` set on a pass -> not a stop. It goes to Open prerequisites in `review.md`.
      3. Two failing rounds in a row -> stop for the owner.
 7. Review: `carry review <slug>` brings this quest and every quest it uses up on review ports. Write `review.md` from `../go/templates/review.md`.
-   - One row per Review gate box and per You see worth a look, plus the diff. A follow-up shows only its own diff.
+   - **Tested:** one row per scenario run, with its surface, result, replay match and evidence path.
+   - **Look at these:** one row per Review gate box and per You see worth a human look, plus the diff. Unmerged work -> every row links the local review server `carry review` printed (`http://127.0.0.1:<port>/<route>`), or gives the exact `curl` with that port. Never a link the owner cannot open right now. A follow-up shows only its own diff.
    - **Side quest:** the builder's You see evidence, before and after.
    - **Calls I made:** copy every `made:` line from the quest's Calls, word for word. Builders report theirs under Defaults taken in the build report; log each one worth a second look with `carry log <slug> "made: ..."` first.
    - **Stopped:** what stopped, why, and the answer you would suggest.

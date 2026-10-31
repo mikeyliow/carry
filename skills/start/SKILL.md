@@ -53,9 +53,10 @@ Weight, per the routing table in `../go/SKILL.md`. Pick it yourself; the owner n
    - Used by another quest -> the Contract says exactly what this repo provides.
 6. `carry lint <slug>` (or `<repo>:<slug>`) for each quest. Fix every line it prints.
    - A side quest trips a "Stays a side quest" test -> `carry quest <slug> [--fix]` re-opens it as a main quest and keeps the draft.
+   - **Main quest -> independent plan review.** `carry spawn plan <slug>` (it runs on the verifier's model unless `[role.plan]` says otherwise), then read its report. Fix each finding in the plan, or answer it in one line when you disagree. Spawn it again until `ready`, at most twice. Still `revise` -> show the owner the open findings with your answer to each; they decide, and `carry approve <slug> --reason "<their words>"` records it.
 7. Approve.
    - Side quest -> `carry approve <slug> --self` (add `--reason "<owner's words>"` only when the owner said why), tell the owner the one-line change in one line, and go straight to step 9. The owner said "plan first" -> show them the one-line change and the task headings, then wait as for a main quest.
-   - Main quest -> show the owner the Flow, the summary, the tasks, the live boxes with their surfaces, the contract, and every default you took, then wait.
+   - Main quest -> show the owner the plan review verdict (and any open finding), the Flow, the summary, the tasks, the live boxes with their surfaces, the contract, and every default you took, then wait.
 8. The owner confirms a main quest -> `carry approve <slug>`.
    - A change before building starts -> edit, show the owner what changed, approve again.
    - After building starts the plan does not change, so builder and verifier judge the same text. New work is a follow-up: `carry quest <new> --continues <slug>`. The CLI refuses an edited plan once building started.

@@ -30,6 +30,7 @@ In a repo you set up, every session is in carry mode. You don't call anything to
 
   Status reads drafting, approved, building r1, verifying r1, writing review, review ready, accepted or done, and stopped when it needs you. `carry status` prints the same with a progress bar per quest, in tasks; `carry status --line` is the one-liner, which setup offers to put in the Claude Code status line (with `--stdin` there).
 - **Cutting in:** say what you want changed while a quest is building. carry treats your message as the approval: if it contradicts what the builder is doing, it restarts the round on the same branch (`── ⚔ MAIN QUEST export · reopened: ... ──`); otherwise it queues the change and builds it as a follow-up when the round ends (`· queued: ...`). "Restart it" or "just queue that" overrides its pick.
+- **Trust:** a main quest plan is reviewed by an independent agent before you see it. The verifier locks its expectations before reading code, checks the builder's new tests fail without the change, and carry replays the verifier's scripts before ticking a box. 1 in 5 side quests (and any that touch a hot path) gets a verifier too.
 - **Check-ins:** `/carry:checkin`, or "where are we", answers in a fixed shape: done, running (with an estimate from earlier rounds), left, blocked, you. It flags an agent that has gone quiet. You also get a push notification when a build finishes, a verdict lands or review is ready.
 - **Pausing:** say "carry off" to pause the mode for this session, and "carry on" to bring it back. If a long session drifts, `/carry:go` re-reads the rules and where every quest stands.
 
@@ -264,7 +265,7 @@ skills/
   pass-the-ball/   hand a session to the next one
   sweep/           owner-run codebase cleanup
   verify/          the independent verifier
-agents/            builder, verifier, checker
+agents/            builder, verifier, plan-reviewer, checker
 hooks/             session-start, prompt-status (the per-turn status line), commit-guard
 bin/carry          the CLI the agents use
 ```
