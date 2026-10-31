@@ -7,6 +7,7 @@ stop: none | spec-gap | infra | contract-gap | grew
 fixed: 0
 open: 0
 new: 0
+prerequisite: none
 ---
 ## Expectations
 
@@ -24,9 +25,11 @@ Mode, for a failing row: `defect` behaviour differs from a quest line. `test` th
 |---|---|---|---|---|---|
 | 1 | L1 | pass / fail | - | scenarios/L1.out | - |
 
+`prerequisite`: an outside dependency the quest logged a workaround for. The box passes on the workaround; name what is still open, e.g. `staging SSO not issued, used the seeded test login`.
+
 ## Extra
 
-Diff against the Build boxes: anything missing, anything extra. Or none.
+Diff against the Build boxes: anything missing, anything extra. Or none. Each finding here is also a Results row; point to it as `#<n>`, or it never reaches the builder.
 
 ## Check
 

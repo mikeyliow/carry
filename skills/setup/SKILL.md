@@ -1,6 +1,6 @@
 ---
 name: setup
-description: Set up or refresh carry for one git repo. Writes .carry/repo.toml with how to check, run and seed it, .carry/rules.md with its rules and how to drive it, proves it by driving one feature, and registers it so other repos can link to it. Asks the machine settings once per machine. Use for /carry:setup (optionally with a path), when a repo has no .carry/ yet, when a repo has no rules file, or after a repo's tooling changes.
+description: Set up or refresh carry for one git repo, only when a code change needs it: questions and runs work without it. Writes .carry/repo.toml with how to check, run and seed it, .carry/rules.md with its rules and how to drive it, proves it by driving one feature, and registers it so other repos can link to it. Asks the machine settings once per machine. Use for /carry:setup (optionally with a path), when a repo has no .carry/ yet, when a repo has no rules file, or after a repo's tooling changes.
 disable-model-invocation: true
 ---
 
@@ -31,10 +31,15 @@ Read the repo, not the owner. Ask the owner only what the repo cannot answer, wi
 8. Write `.carry/rules.md` from `../mode/templates/rules.md`. Every value from this repo, no placeholders.
    - **Rules:** the repo's real conventions, what not to touch, how its tests are written, its commit rules. Only what an agent would otherwise get wrong.
    - **Drive it:** launch and ready signal, one read-only doctor check, how to drive it like a user (routes, commands, accessible names), what evidence to capture, cleanup.
-9. Prove it in a throwaway quest named `setup-<yyyymmddhhmm>`: `carry quest <it> --side`, `carry prep <it>`, `carry up <it>`. Run the doctor check, drive one user-facing feature found in the code, capture the evidence. Fix the files and re-run until it passes. Then `carry drop <it>`.
-10. Commit nothing. Tell the owner which `.carry/` files are worth committing for teammates: `repo.toml` and `rules.md`.
+9. **The repo has screens** -> write the UI harness once, so no round reinvents it:
+   - Copy `../mode/templates/ui/` to `.carry/ui/`. Fill `auth.setup.ts` with the seeded user and the real login labels, and the probe's ready check.
+   - Add the `ui` line to `.carry/repo.toml` (see the example). Find a browser: the repo's own Playwright, the Playwright cache, earlier harnesses. None -> `npx playwright install chromium`.
+   - A mobile app -> the iOS simulator instead: write the build and launch commands into Drive it.
+   - `carry doctor` must show `ui ... browser <path>`.
+10. Prove it in a throwaway quest named `setup-<yyyymmddhhmm>`: `carry quest <it> --side`, `carry prep <it>`, `carry up <it>`. Run the doctor check, drive one user-facing feature found in the code (through `carry exec <it> ui` when the harness exists), capture the evidence. Fix the files and re-run until it passes. Then `carry drop <it>`.
+11. Commit nothing. Tell the owner which `.carry/` files are worth committing for teammates: `repo.toml`, `rules.md` and `ui/`.
 
-`/carry:setup` again later refreshes steps 3, 7, 8 and 9. The machine answers stay.
+`/carry:setup` again later refreshes steps 3, 7 to 10. The machine answers stay.
 
 ## Growing the rules later
 

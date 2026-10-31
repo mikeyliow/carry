@@ -1,7 +1,8 @@
 ---
 name: start
-description: Start flow for every code change. Writes one quest per repo, a checklist plan where every box names its evidence, a main or side quest, feature or fix. The owner confirms a main quest; a side quest is approved by the agent unless the owner says "plan first". The build skill builds it, the owner reviews it, then the PR. Product intent comes from a spec elsewhere. Use for /carry:start or when the carry entry skill routes a code change here.
+description: Start flow for every code change. Writes one quest per repo, a checklist plan where every box names its evidence, a main or side quest, feature or fix. The owner confirms a main quest; a side quest is approved by the agent unless the owner says "plan first". The build skill builds it, the owner reviews it, then the PR. Product intent comes from a spec elsewhere. Internal: the mode skill routes every code change here.
 disable-model-invocation: true
+user-invocable: false
 ---
 
 # Start
@@ -37,15 +38,20 @@ Weight, per the routing table in `../mode/SKILL.md`. Pick it yourself; the owner
    - Moves or rebuilds a lot of data -> measure first: run the real path on a small slice and extrapolate. Fits the live box budget -> the verifier runs it in full. Does not -> the verifier proves it on a seeded slice, and the full run is listed as an owner run after review, with the measured estimate.
    - An open technical question -> a spike, per `../mode/SKILL.md`: try it in a scratch folder, throw the code away, and log the result as `made:`. A main quest also records it in Appendix A.
    - A product question the spec does not answer, and no spike can settle -> `carry log <slug> "raised: <question> | suggested: <answer>"` and ask the owner. Keep planning everything that does not depend on it.
+   - **Check every shape you will write against the repo first.** The error envelope, route paths and prefixes, status codes, field casing, pagination: copy them from an existing endpoint or screen (`file:line`), never from memory. A plan that guesses a shape stops the verifier.
+   - **Uses a quest in another repo** -> read that quest, its repo's `rules.md` and its `repo.toml` (mode, config, ports, seed) before writing any live box that crosses into it.
+   - **Branches from something other than the repo's base** -> `carry quest <slug> --base <ref>`.
 5. Fill the template. Keep every heading in order. One `## Task:` section per unit of work. Every box names its evidence.
+   - Main quest -> **Flow**: five to ten lines, numbered steps or a small diagram. What runs in parallel, what waits on what, where carry hands values across repos (a branch, a port, a seeded id). When several quests ship together, show the same Flow to the owner with the quest list.
+   - Main quest -> each live box starts with its surface: `api`, `cli`, `component`, `browser` or `sim`. Pick the cheapest that proves it. Most UI boxes are `component` (a state renders) or `api` (the data behind it is right); keep `browser` for one or two journeys that cross screens or the stack, and group boxes on one journey.
    - Main quest -> each task has at least one `L<n>. ... Pass when ...` box.
    - Main quest -> Downstream lists every number the platform reports from this data (a balance, a valuation, a return), each with a live box that ties it out. The builder only touches the feature; the verifier catches the rest.
    - Used by another quest -> the Contract says exactly what this repo provides.
 6. `carry lint <slug>` (or `<repo>:<slug>`) for each quest. Fix every line it prints.
    - A side quest trips a "Stays a side quest" test -> `carry quest <slug> [--fix]` re-opens it as a main quest and keeps the draft.
 7. Approve.
-   - Side quest -> `carry approve <slug> --self`, tell the owner the one-line change in one line, and go straight to step 9. The owner said "plan first" -> show them the one-line change and the task headings, then wait as for a main quest.
-   - Main quest -> show the owner the summary, the tasks, the live boxes, the contract, and every default you took, then wait.
+   - Side quest -> `carry approve <slug> --self` (add `--reason "<owner's words>"` only when the owner said why), tell the owner the one-line change in one line, and go straight to step 9. The owner said "plan first" -> show them the one-line change and the task headings, then wait as for a main quest.
+   - Main quest -> show the owner the Flow, the summary, the tasks, the live boxes with their surfaces, the contract, and every default you took, then wait.
 8. The owner confirms a main quest -> `carry approve <slug>`.
    - A change before building starts -> edit, show the owner what changed, approve again.
    - After building starts the plan does not change, so builder and verifier judge the same text. New work is a follow-up: `carry quest <new> --continues <slug>`. The CLI refuses an edited plan once building started.

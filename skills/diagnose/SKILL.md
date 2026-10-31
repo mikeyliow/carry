@@ -1,7 +1,8 @@
 ---
 name: diagnose
-description: Trace something broken to its root cause with runtime evidence. Gathers context, reproduces, traces logs, data, contracts and history, rules out hypotheses, and weighs candidate fixes by impact. Used when planning a fix, by a builder handling verify findings, and by run for "why is X broken". Use for /carry:diagnose.
+description: Trace something broken to its root cause with runtime evidence. Gathers context, reproduces, traces logs, data, contracts and history, rules out hypotheses, and weighs candidate fixes by impact. Used when planning a fix, by a builder handling verify findings, and by run for "why is X broken". Internal: reached through the mode skill.
 disable-model-invocation: true
+user-invocable: false
 ---
 
 # Diagnose
