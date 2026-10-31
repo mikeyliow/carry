@@ -191,6 +191,8 @@ You have four slash commands. carry picks the flow for everything else:
 /carry:pass-the-ball  hand this session to a new one; run it again in the new session to pick it up
 ```
 
+Screen checks default to repeatable scripts on a small harness in `.carry/ui/`. A plan can choose `ui: agent` instead: no scripts, the agent drives its own browser tool and judges the screenshots. Set a repo's default with `ui_driver` in `repo.toml`.
+
 Questions, scripts and deploys work in any folder: a plain folder, a folder of repos, or a git repo with no setup. Only a code change needs a set-up repo, because it gets its own worktree and branch.
 
 What you do along the way: confirm main quest plans, review the result and the calls made, merge the PRs. To see where everything stands, or to resume after a break:

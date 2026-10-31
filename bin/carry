@@ -463,6 +463,7 @@ cmd_quest() {
     say "picked up the queued changes from $CONT: put them in this plan"
   fi
   [ -n "$BASE" ] && [ -z "$CONT" ] && fm_set "$dir/quest.md" base "$BASE"
+  fm_set "$dir/quest.md" ui "$(cfgd repo ui_driver script)"
   append_log "$slug" planner "opened: $type, $weight, repo $NAME${CONT:+, continues $CONT}${USES:+, uses $USES}${BASE:+, base $BASE}"
   say "$dir/quest.md"
   banner "$slug"
@@ -491,6 +492,7 @@ validate_quest() {
   in_set "$weight" side main || problem "$f" "weight must be side or main"
   [ -n "$(fm_get "$f" spec)" ] || problem "$f" "frontmatter spec is empty: a link to the product spec, or none"
   [ -n "$repo" ] || problem "$f" "frontmatter repo is empty: one quest per repo"
+  case "$(fm_get "$f" ui)" in ""|script|agent) ;; *) problem "$f" "ui must be script (the repo's .carry/ui harness, the default) or agent (the agent drives a browser tool)" ;; esac
   if [ -n "$CFG" ]; then
     [ -z "$repo" ] || [ "$repo" = "$NAME" ] || problem "$f" "repo is '$repo', but this quest lives in repo $NAME"
     for u in $(list_of "$(fm_get "$f" uses)"); do
@@ -874,7 +876,7 @@ cmd_status() {
   local d f slug state need link right
   if [ -n "$1" ]; then
     f="$(quest_file "$1")" || exit 1
-    for k in type weight state repo base uses continues spec approved pr; do
+    for k in type weight state repo base ui uses continues spec approved pr; do
       case "$(fm_get "$f" "$k")" in ""|none) ;; *) say "$k: $(fm_get "$f" "$k")" ;; esac
     done
     say "branch: $(branch_of "$1"), worktree: $(wt_of "$1")"
@@ -1307,6 +1309,18 @@ cmd_tidy() {
   [ -z "${other:-}" ] || say "other clones have merged leftovers: '$CLI tidy --yes' cleans them too, in one go"
 }
 
+ui_line() {
+  local slug="$1" role="$2" as="" dir="you_see:"
+  [ "$role" = verify ] && { as=" --as verify"; dir="scenarios:"; }
+  if [ "$(fm_get "$QUESTS/$slug/quest.md" ui)" = agent ]; then
+    printf -- '- ui: agent. Drive screens yourself with the browser tool your harness gives you: open the sandbox URL, act by visible label, screenshot each checkpoint. Write the steps as `<box>.steps.md` in your %s folder, so a rerun repeats them. No browser tool -> fall back to the script harness if the repo has one, else `infra`\n' "$dir"
+  elif [ -d "$(wt_of "$slug")/$HOME_DIR/ui" ]; then
+    printf -- '- ui: script. Harness %s/%s/ui. Screen checks are `<box>.spec.ts` importing `../carry` in your %s folder, run with `%s exec %s ui%s`\n' "$(wt_of "$slug")" "$HOME_DIR" "$dir" "$CLI" "$slug" "$as"
+  else
+    printf -- '- ui: script, but this repo has no .carry/ui harness yet. Look for a browser per the verify skill; a browser tool in your harness is the fallback, else `infra`\n'
+  fi
+}
+
 write_brief() {
   local role="$1" slug="$2" out="$3" f prev bf u
   f="$QUESTS/$slug/quest.md"
@@ -1324,6 +1338,7 @@ write_brief() {
       [ -f "$(wdir "$slug")/build-$ROUND.log" ] && [ ! -f "$(wdir "$slug")/build-$ROUND.md" ] && printf -- '- resume: an earlier attempt at this round stopped before its report. Its commits are on the branch (`git log --oneline %s..HEAD`) and its `box:` lines are in %s. Keep what is committed and passes the check; continue from the first box with no evidence\n' "$(fm_get "$f" start)" "$(wdir "$slug")/log.md"
       grep -q '^- reopened:' "$f" && printf -- '- reopened: an earlier build of this quest is on the branch, possibly partial. Diff against the base first; keep what fits this plan, redo what does not\n'
       [ "$(fm_get "$f" weight)" = side ] && printf -- '- side quest: no verifier follows. Your You see evidence, before and after, is the proof\n'
+      ui_line "$slug" build
       printf -- '- report template: %s/build-report.md\n\n## Findings to fix\n' "$TEMPLATES"
       prev="$(wdir "$slug")/verify-$((ROUND-1)).md"
       if [ "$ROUND" -gt 1 ] && [ -f "$prev" ]; then
@@ -1340,8 +1355,7 @@ write_brief() {
     else
       printf 'sandbox: %s\nreport: %s\nscenarios: %s/scenarios/\n---\n' "$(env_file "$slug" verify)" "$(wdir "$slug")/verify-$ROUND.md" "$(wdir "$slug")"
       printf '## Read\n- quest: %s (the summary, Contract, and every You see and Verify, live box)\n- report template: %s/verify-report.md\n' "$f" "$TEMPLATES"
-      if [ -d "$(wt_of "$slug")/$HOME_DIR/ui" ]; then printf -- '- ui harness: %s/%s/ui. `browser` boxes are `L<n>.spec.ts` importing `../carry` and run with `%s exec %s ui --as verify`\n' "$(wt_of "$slug")" "$HOME_DIR" "$CLI" "$slug"
-      else printf -- '- ui harness: none in this repo. A `browser` box with no harness: look for a browser per the verify skill before calling it infra\n'; fi
+      ui_line "$slug" verify
       printf -- '- tests the diff touches: %s\n' "$( (cd "$(wt_of "$slug")" 2>/dev/null && git diff --name-only "$(git merge-base HEAD "$(base_ref "$slug")" 2>/dev/null)" 2>/dev/null | grep -Ei '(test|spec)' | tr '\n' ' ') || true)"
       for u in $(uses_of "$slug"); do
         printf -- '- uses %s (repo %s): its Contract is in %s. Bring it up with `%s prep %s --as verify` and `%s up %s --as verify`, then check end to end\n' "$u" "$(quest_repo "$u")" "$(ddir "$u")/quest.md" "$CLI" "$u" "$CLI" "$u"

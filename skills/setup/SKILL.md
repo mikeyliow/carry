@@ -31,11 +31,12 @@ Read the repo, not the owner. Ask the owner only what the repo cannot answer, wi
 8. Write `.carry/rules.md` from `../mode/templates/rules.md`. Every value from this repo, no placeholders.
    - **Rules:** the repo's real conventions, what not to touch, how its tests are written, its commit rules. Only what an agent would otherwise get wrong.
    - **Drive it:** launch and ready signal, one read-only doctor check, how to drive it like a user (routes, commands, accessible names), what evidence to capture, cleanup.
-9. **The repo has screens** -> write the UI harness once, so no round reinvents it:
+9. **The repo has screens** -> ask the owner which UI driver this repo defaults to, suggested `script`, and write `ui_driver = "script"` or `"agent"` under `[repo]`. A quest can still pick the other one. For `script`, write the UI harness once, so no round reinvents it:
    - Copy `../mode/templates/ui/` to `.carry/ui/`. Fill `auth.setup.ts` with the seeded user and the real login labels, and the probe's ready check.
    - Add the `ui` line to `.carry/repo.toml` (see the example). Find a browser: the repo's own Playwright, the Playwright cache, earlier harnesses. None -> `npx playwright install chromium`.
+   - `agent` -> no harness to write. Record in Drive it the login steps and the seeded user, so any browser tool can follow them.
    - A mobile app -> the iOS simulator instead: write the build and launch commands into Drive it.
-   - `carry doctor` must show `ui ... browser <path>`.
+   - `script` -> `carry doctor` must show `ui ... browser <path>`.
 10. Prove it in a throwaway quest named `setup-<yyyymmddhhmm>`: `carry quest <it> --side`, `carry prep <it>`, `carry up <it>`. Run the doctor check, drive one user-facing feature found in the code (through `carry exec <it> ui` when the harness exists), capture the evidence. Fix the files and re-run until it passes. Then `carry drop <it>`.
 11. Commit nothing. Tell the owner which `.carry/` files are worth committing for teammates: `repo.toml`, `rules.md` and `ui/`.
 

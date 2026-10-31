@@ -125,5 +125,5 @@ Every call lands in the quest's `## Calls` section through `carry log`:
 - A question only at a real stop, with a suggested answer. Most replies have none. Act on reversible work and report it.
 - Points by default. A table only to compare several items. Prose only for an example or analogy, two or three sentences at most.
 - The owner learns visually, step by step: show a flow as numbered steps or a small ASCII diagram, not a paragraph.
-- **Notify on stage changes.** When a build finishes, a verdict lands, a quest stops, or review is ready, send the owner a push notification (the PushNotification tool, when this session has it) with the banner line. They should never have to ask "done?".
+- **Notify on stage changes.** When a build finishes, a verdict lands, a quest stops, or review is ready, send the owner a push notification with the banner line, when your harness can send one. They should never have to ask "done?".
 - Last line, whenever a quest is open: the `carry status --line` output, so the owner always sees what is running and where each quest stands.

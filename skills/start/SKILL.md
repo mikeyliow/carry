@@ -44,6 +44,10 @@ Weight, per the routing table in `../mode/SKILL.md`. Pick it yourself; the owner
 5. Fill the template. Keep every heading in order. One `## Task:` section per unit of work. Every box names its evidence.
    - Main quest -> **Flow**: five to ten lines, numbered steps or a small diagram. What runs in parallel, what waits on what, where carry hands values across repos (a branch, a port, a seeded id). When several quests ship together, show the same Flow to the owner with the quest list.
    - Main quest -> each live box starts with its surface: `api`, `cli`, `component`, `browser` or `sim`. Pick the cheapest that proves it. Most UI boxes are `component` (a state renders) or `api` (the data behind it is right); keep `browser` for one or two journeys that cross screens or the stack, and group boxes on one journey.
+   - Has `browser` boxes -> pick how screens are driven in the `ui:` frontmatter, and say it with the Flow:
+     - `script` (default): repeatable checks on the repo's `.carry/ui` harness.
+     - `agent`: no scripts. The builder and verifier drive the browser tool their harness gives them and judge the screenshots. Take it when the owner asks, or when the repo has no harness and adding one is not worth it for this quest.
+   - Has `browser` boxes -> pick how screens are driven, in the `ui:` frontmatter, and say it with the Flow: `script` (default: repeatable checks on the repo's `.carry/ui` harness) or `agent` (no scripts: the builder and verifier drive a browser tool their harness gives them, and judge the screenshots). Take `agent` when the owner asks, or when the repo has no harness and adding one is not worth it for this quest.
    - Main quest -> each task has at least one `L<n>. ... Pass when ...` box.
    - Main quest -> Downstream lists every number the platform reports from this data (a balance, a valuation, a return), each with a live box that ties it out. The builder only touches the feature; the verifier catches the rest.
    - Used by another quest -> the Contract says exactly what this repo provides.

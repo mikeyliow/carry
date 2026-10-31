@@ -78,7 +78,7 @@ TODO every number or view the platform reports from the data this quest touches 
 
 - [ ] L1. `api` TODO given, steps. Pass when TODO, within TODO min.
 
-Each live box names its surface first: `api` (curl), `cli`, `component` (the repo's component tests), `browser` (Playwright through `.carry/ui/`) or `sim` (iOS simulator). Pick the cheapest surface that proves the box; `browser` only for a journey across screens or the stack.
+Each live box names its surface first: `api` (curl), `cli`, `component` (the repo's component tests), `browser` (driven per the `ui:` frontmatter: `script` or `agent`) or `sim` (iOS simulator). Pick the cheapest surface that proves the box; `browser` only for a journey across screens or the stack.
 
 **Review gate.**
 

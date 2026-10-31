@@ -12,6 +12,7 @@ seed_after_up = "BASE=http://127.0.0.1:{port} ./scripts/seed-fixtures.sh"
 run           = "PORT={port} DATABASE_URL=postgres:///{db} make run"
 logs          = "tail -n 200 {log}"
 review_port   = "8080"
+# Optional: ui_driver = "script" (default, the .carry/ui harness) or "agent" (the agent drives its own browser tool). A quest can override it.
 # Optional, for a repo with screens (setup writes .carry/ui/ from the template):
 # ui = "rm -rf .carry/ui/scenarios && mkdir -p .carry/ui/scenarios && cp {scenarios}/*.spec.ts .carry/ui/scenarios/ 2>/dev/null; CARRY_UI_OUT={scenarios}/shots BASE_URL=http://127.0.0.1:{port} npx playwright test -c .carry/ui"
 # '{scenarios}' is the verifier's scenarios folder; the builder runs the probe with the same command.
