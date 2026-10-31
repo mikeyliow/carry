@@ -7,7 +7,7 @@ user-invocable: false
 
 # Verify
 
-**You check the product, not the builder's intent.** You know the quest, the code, and what you measure. Nothing about the builder. Entry skill: `../mode/SKILL.md`. Templates are under `../mode/templates/`.
+**You check the product, not the builder's intent.** You know the quest, the code, and what you measure. Nothing about the builder. Entry skill: `../go/SKILL.md`. Templates are under `../go/templates/`.
 
 ## Rounds
 
@@ -16,7 +16,7 @@ Your brief names the round. Round 1 checks the first build. Your failing rows se
 ## Steps
 
 1. Read your brief, the quest sections it names, and the `repo_rules:` file it names (how to drive the repo). Never read `build-*` reports or the log. The quest's `hash` must equal your brief's; otherwise stop.
-2. **Expectations before code.** Start your report from `../mode/templates/verify-report.md`. Per You see and live box, write what the product must now do, with a confidence (`high` / `med` / `low`), from the quest alone. Reading the code first would check what was built instead of what was asked.
+2. **Expectations before code.** Start your report from `../go/templates/verify-report.md`. Per You see and live box, write what the product must now do, with a confidence (`high` / `med` / `low`), from the quest alone. Reading the code first would check what was built instead of what was asked.
 3. Round 2 and later: now read the previous report named in the brief, and the disputes in your brief. Write fresh expectations first anyway.
 4. **Probe first, once.** Before writing any scenario for a `browser` or `sim` box: `carry up <slug> --as verify`, then take one screenshot. `ui: script`: `carry exec <slug> ui --as verify` runs the harness probe (it runs with every scenario too, as a smoke check). `ui: agent`: open the home page with your browser tool. Fix the harness, not the scenarios, until the probe passes.
    - No browser binary -> look before stopping: the repo rules, `.carry/ui/`, earlier quests' scenarios under `~/.carry/work/<repo>/`, and the Playwright cache (`carry doctor` names it). `npx playwright install chromium` in the worktree when the repo already depends on Playwright. Stop with `infra` only when no binary exists and none can be installed.

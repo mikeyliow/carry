@@ -1,6 +1,6 @@
 ---
 name: run
-description: Run flow, for anything that is not a code change. Answers questions with evidence, back and forth with the owner, and runs scripts, API calls, reseeds and deploys. Anything that would change state is shown first and runs only after the owner confirms. Internal: the mode skill routes questions, scripts and deploys here. Works in any folder, git or not.
+description: Run flow, for anything that is not a code change. Answers questions with evidence, back and forth with the owner, and runs scripts, API calls, reseeds and deploys. Anything that would change state is shown first and runs only after the owner confirms. Internal: the go skill routes questions, scripts and deploys here. Works in any folder, git or not.
 disable-model-invocation: true
 user-invocable: false
 ---

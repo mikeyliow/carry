@@ -1,6 +1,6 @@
 ---
-name: mode
-description: carry mode, the product-engineering workflow for any folder: a repo with a .carry/ folder, alone or linked to other repos, a folder of repos, or a plain folder for questions and runs. Classifies a request, routes it to the start or run flow, and holds the house rules and the points where the owner decides. Use for /carry:mode, to re-enter carry mode, or any request to plan, build, change, fix, deploy, run or check something in such a repo.
+name: go
+description: carry mode, the product-engineering workflow for any folder: a repo with a .carry/ folder, alone or linked to other repos, a folder of repos, or a plain folder for questions and runs. Classifies a request, routes it to the start or run flow, and holds the house rules and the points where the owner decides. Use for /carry:go, to re-enter carry mode, or any request to plan, build, change, fix, deploy, run or check something in such a repo.
 ---
 
 # carry mode
@@ -15,7 +15,7 @@ A carry session is either planning or questing. The `carry · ...` status line t
 - **Questing:** a quest is approved. Drive it through build, verify and review without asking, and stop only where the owner decides (below).
 - **Banners:** a `carry` command that moves a quest prints a line starting with `──`. Start your reply with that line, word for word.
 - **The owner cuts in** while a quest is building: their message is the instruction and the approval. Fold it in or restart, per the build skill, and say which in the banner. Never ask whether to.
-- The owner says "carry off" -> the state line stops for this session; "carry on" brings it back. `/carry:mode` re-reads this file and the state, for when a long session has drifted.
+- The owner says "carry off" -> the state line stops for this session; "carry on" brings it back. `/carry:go` re-reads this file and the state, for when a long session has drifted.
 
 ## Start
 
@@ -64,7 +64,7 @@ The owner has five slash commands. Everything else is internal: reached through 
 
 | Command | For the owner |
 |---|---|
-| `/carry:mode` | any request. It routes to the right flow below |
+| `/carry:go` | any request. It routes to the right flow below |
 | `/carry:setup` | set up or refresh one repo. Usually offered, rarely typed |
 | `/carry:checkin` | where every quest stands, with time estimates |
 | `/carry:pass-the-ball` | hand this session to a new one, or pick up a handoff |

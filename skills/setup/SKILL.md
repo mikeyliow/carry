@@ -25,14 +25,14 @@ Read the repo, not the owner. Ask the owner only what the repo cannot answer, wi
    - The base branch. Suggested: the detected default (e.g. `origin/main`).
    - Other repos it calls or is called by. Each one that is not set up yet -> offer setup for it after this one. Skip -> `carry skip <dir>`.
 5. **Show the owner one summary:** the answers, the detected commands and database. Write nothing until they confirm.
-6. Write `~/.carry/config.toml` from `../mode/templates/machine.example.toml`, if step 2 ran.
+6. Write `~/.carry/config.toml` from `../go/templates/machine.example.toml`, if step 2 ran.
    - Status line, if the owner said yes. `~/.claude/settings.json` has no `statusLine` -> add `"statusLine": {"type": "command", "command": "<carry root>/bin/carry status --line --stdin"}` (`carry root` prints the path). It has one -> never replace it. Show the owner the two lines to add to their script instead: keep stdin in a variable, then pipe it into `carry status --line --stdin`.
-7. Write `.carry/repo.toml` from `../mode/templates/repo.example.toml`: `[repo]` with `name`, `base`, `check`, `run`, `seed`, `seed_after_up`, `logs`, `review_port`; `[sandbox]` with `create` and `drop`, empty without a database. Placeholders: `{port}` `{db}` `{wt}` `{log}` `{port:<other-repo>}`.
-8. Write `.carry/rules.md` from `../mode/templates/rules.md`. Every value from this repo, no placeholders.
+7. Write `.carry/repo.toml` from `../go/templates/repo.example.toml`: `[repo]` with `name`, `base`, `check`, `run`, `seed`, `seed_after_up`, `logs`, `review_port`; `[sandbox]` with `create` and `drop`, empty without a database. Placeholders: `{port}` `{db}` `{wt}` `{log}` `{port:<other-repo>}`.
+8. Write `.carry/rules.md` from `../go/templates/rules.md`. Every value from this repo, no placeholders.
    - **Rules:** the repo's real conventions, what not to touch, how its tests are written, its commit rules. Only what an agent would otherwise get wrong.
    - **Drive it:** launch and ready signal, one read-only doctor check, how to drive it like a user (routes, commands, accessible names), what evidence to capture, cleanup.
 9. **The repo has screens** -> ask the owner which UI driver this repo defaults to, suggested `script`, and write `ui_driver = "script"` or `"agent"` under `[repo]`. A quest can still pick the other one. For `script`, write the UI harness once, so no round reinvents it:
-   - Copy `../mode/templates/ui/` to `.carry/ui/`. Fill `auth.setup.ts` with the seeded user and the real login labels, and the probe's ready check.
+   - Copy `../go/templates/ui/` to `.carry/ui/`. Fill `auth.setup.ts` with the seeded user and the real login labels, and the probe's ready check.
    - Add the `ui` line to `.carry/repo.toml` (see the example). Find a browser: the repo's own Playwright, the Playwright cache, earlier harnesses. None -> `npx playwright install chromium`.
    - `agent` -> no harness to write. Record in Drive it the login steps and the seeded user, so any browser tool can follow them.
    - A mobile app -> the iOS simulator instead: write the build and launch commands into Drive it.

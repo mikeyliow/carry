@@ -13,8 +13,8 @@ CONFIG_NAME="$HOME_DIR/repo.toml"
 CARRY_HOME="${CARRY_HOME:-$HOME/.carry}"
 MCFG="$CARRY_HOME/config.toml"
 REG="$CARRY_HOME/repos.toml"
-TEMPLATES="$PLUGIN_ROOT/skills/mode/templates"
-ENTRY_SKILL="$PLUGIN_ROOT/skills/mode/SKILL.md"
+TEMPLATES="$PLUGIN_ROOT/skills/go/templates"
+ENTRY_SKILL="$PLUGIN_ROOT/skills/go/SKILL.md"
 
 die() { printf '%s: %s\n' "$CLI" "$*" >&2; exit 1; }
 say() { printf '%s\n' "$*"; }
@@ -23,7 +23,7 @@ usage_owner() {
   cat <<EOF
 $CLI - quests, builds, verifies and runs, one repo at a time, linked across repos. One quest = one repo = one branch.
 A quest in another repo is named <repo>:<slug>. Every command that takes a slug takes that form too.
-In Claude: /carry:mode for anything, /carry:checkin for where things stand, /carry:pass-the-ball to hand off a session.
+In Claude: /carry:go for anything, /carry:checkin for where things stand, /carry:pass-the-ball to hand off a session.
 
 For you
   status [slug]                           every quest with a progress bar, or one quest's next step
@@ -52,7 +52,7 @@ For carry's agents
   lint <file | slug | slug/report> [...]  check a quest or report against its template
   approve <slug> [--self]                 after the owner confirms: stamp the plan. --self: a side quest, no owner
   status --line [--stdin]                 one line, for the per-turn hook and the status line
-  progress <slug>                         done, running with estimate, left, blocked, for the checkin skill
+  progress [slug] [--all]                 done, running with estimate, left, blocked. --all: every set-up repo, for the checkin skill
   log <slug> <line> [line...]             append to the quest log
   sync <slug>                             rebase the branch on the latest base, say if the patch changed
   done <slug> [pr-url]                    the PR is open: mark done
@@ -935,14 +935,26 @@ progress_one() {
   local blocked; blocked="$(printf '%s' "$need" | tr ' ' '\n' | grep -E '^(raised|stop|queued|edited)' | tr '\n' ' ' | sed 's/ $//')"
   say "  blocked: ${blocked:-none}"
   case "$(where_is "$slug")" in
-    drafting|stopped|"review ready"|bounced) say "  you:     $(next_step "$slug" | head -1)" ;;
+    drafting) if [ "$weight" = main ]; then say "  you:     confirm the plan when carry shows it"; else say "  you:     nothing (carry approves a side quest itself)"; fi ;;
+    stopped) say "  you:     decide on the stop: $(next_step "$slug" | head -1)" ;;
+    "review ready") say "  you:     answer the review: accept or bounce each item" ;;
     *) [ -n "$need" ] && say "  you:     $need" || say "  you:     nothing" ;;
   esac
 }
 
 cmd_progress() {
+  local slug n=0 r p out
+  if [ "$ALL" -eq 1 ]; then
+    while IFS="$(printf '\t')" read -r r p; do
+      [ -n "$p" ] && [ -f "$p/$CONFIG_NAME" ] || continue
+      out="$(CARRY_REPO="$p" "$SELF" progress 2>/dev/null)"
+      case "$out" in ""|"no open quests") continue ;; esac
+      n=$((n+1)); say "── $r ($p)"; printf '%s\n' "$out"
+    done <<< "$(reg_rows repos)"
+    [ "$n" -gt 0 ] || say "no open quests in any repo"
+    return 0
+  fi
   need_root
-  local slug n=0
   if [ -n "$1" ]; then quest_file "$1" >/dev/null; progress_one "$1"; return; fi
   for slug in $(open_quests); do n=$((n+1)); progress_one "$slug"; done
   [ "$n" -gt 0 ] || say "no open quests"
@@ -1722,7 +1734,7 @@ main() {
     lint) cmd_lint "$@" ;;
     approve) [ $# -eq 1 ] || die "approve <slug> [--self [--reason \"<owner's words>\"]]"; cmd_approve "$1" ;;
     status) cmd_status "${1:-}" ;;
-    progress) [ $# -le 1 ] || die "progress [slug]"; cmd_progress "${1:-}" ;;
+    progress) [ $# -le 1 ] || die "progress [slug] [--all]"; cmd_progress "${1:-}" ;;
     log) [ $# -ge 2 ] || die "log <slug> <line> [line...]"; cmd_log "$@" ;;
     sync) [ $# -eq 1 ] || die "sync <slug>"; cmd_sync "$1" ;;
     done) [ $# -ge 1 ] || die "done <slug> [pr-url]"; cmd_done "$1" "${2:-}" ;;

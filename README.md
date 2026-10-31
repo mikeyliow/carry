@@ -31,7 +31,7 @@ In a repo you set up, every session is in carry mode. You don't call anything to
   Status reads drafting, approved, building r1, verifying r1, writing review, review ready, accepted or done, and stopped when it needs you. `carry status` prints the same with a progress bar per quest, in tasks; `carry status --line` is the one-liner, which setup offers to put in the Claude Code status line (with `--stdin` there).
 - **Cutting in:** say what you want changed while a quest is building. carry treats your message as the approval: if it contradicts what the builder is doing, it restarts the round on the same branch (`── ⚔ MAIN QUEST export · reopened: ... ──`); otherwise it queues the change and builds it as a follow-up when the round ends (`· queued: ...`). "Restart it" or "just queue that" overrides its pick.
 - **Check-ins:** `/carry:checkin`, or "where are we", answers in a fixed shape: done, running (with an estimate from earlier rounds), left, blocked, you. It flags an agent that has gone quiet. You also get a push notification when a build finishes, a verdict lands or review is ready.
-- **Pausing:** say "carry off" to pause the mode for this session, and "carry on" to bring it back. If a long session drifts, `/carry:mode` re-reads the rules and where every quest stands.
+- **Pausing:** say "carry off" to pause the mode for this session, and "carry on" to bring it back. If a long session drifts, `/carry:go` re-reads the rules and where every quest stands.
 
 ## Words
 
@@ -185,7 +185,7 @@ carry checks every folder you added. A repo that is not set up gets one question
 You have five slash commands. carry picks the flow for everything else:
 
 ```
-/carry:mode           anything: "fix the CSV export totals", "why did yesterday's import fail", "reseed staging"
+/carry:go           anything: "fix the CSV export totals", "why did yesterday's import fail", "reseed staging"
 /carry:setup          set up or refresh one repo (carry offers it when a code change needs it)
 /carry:checkin        where every quest stands: done, running with a time estimate, left, blocked, you
 /carry:pass-the-ball  hand this session to a new one; run it again in the new session to pick it up
@@ -251,7 +251,7 @@ model = "sonnet"
 
 ```
 skills/
-  mode/            entry: routing, house rules, where you decide
+  go/              entry: routing, house rules, where you decide
     templates/     main-quest, side-quest, build-report, verify-report,
                    review, pr, rules, machine.example.toml, repo.example.toml,
                    ui/ (the Playwright harness setup copies into .carry/ui/)
