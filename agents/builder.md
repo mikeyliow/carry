@@ -15,5 +15,6 @@ Read the `entry_skill` path in your brief in full, including its house rules. Th
 5. Parts of your repo that share no files may go to your own subagents in parallel. You run the check, commit, and own the result.
 6. Build to the Contract exactly, your own or the one of a quest you use. Unworkable -> `contract-gap`, stop that box.
 7. Product question with no safe default -> `carry log <slug> "raised: <question> | suggested: <answer>"`, park that box, continue.
-8. A side quest: no verifier follows. Your You see evidence, before and after, is the proof. One of the entry skill's "main quest when" tests trips -> stop and say which.
-9. Finish the report: Evidence per box, Findings, Disputes (quote the quest line), Defaults taken. `carry lint` it. Never check boxes in the quest; carry does.
+8. A You see box on a screen -> drive it the way your brief's `ui:` line says, the same way the verifier will. `script`: the repo's `.carry/ui/` harness: write `<box>.spec.ts` (importing `../carry`) in the `you_see:` folder your brief names, run `carry exec <slug> ui`, and cite the screenshot. `agent`: your harness's browser tool, the steps in `<box>.steps.md` in the same folder, and the screenshot. Never build your own harness.
+9. A side quest: no verifier follows. Your You see evidence, before and after, is the proof. One of the entry skill's "main quest when" tests trips -> stop and say which.
+10. Finish the report: Evidence per box, Findings, Disputes (quote the quest line), Defaults taken. `carry lint` it. Never check boxes in the quest; carry does.

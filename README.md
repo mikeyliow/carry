@@ -30,8 +30,9 @@ In a repo you set up, every session is in carry mode. You don't call anything to
 
   Status reads drafting, approved, building r1, verifying r1, writing review, review ready, accepted or done, and stopped when it needs you. `carry status` prints the same with a progress bar per quest, in tasks; `carry status --line` is the one-liner, which setup offers to put in the Claude Code status line (with `--stdin` there).
 - **Cutting in:** say what you want changed while a quest is building. carry treats your message as the approval: if it contradicts what the builder is doing, it restarts the round on the same branch (`── ⚔ MAIN QUEST export · reopened: ... ──`); otherwise it queues the change and builds it as a follow-up when the round ends (`· queued: ...`). "Restart it" or "just queue that" overrides its pick.
-- **Check-ins:** `/carry:checkin`, or "where are we", answers in a fixed shape: done, running, left, blocked, you.
-- **Pausing:** say "carry off" to pause the mode for this session, and "carry on" to bring it back. If a long session drifts, `/carry:mode` re-reads the rules and where every quest stands.
+- **Trust:** a main quest plan is reviewed by an independent agent before you see it. The verifier locks its expectations before reading code, checks the builder's new tests fail without the change, and carry replays the verifier's scripts before ticking a box. 1 in 5 side quests (and any that touch a hot path) gets a verifier too.
+- **Check-ins:** `/carry:checkin`, or "where are we", answers in a fixed shape: done, running (with an estimate from earlier rounds), left, blocked, you. It flags an agent that has gone quiet. You also get a push notification when a build finishes, a verdict lands or review is ready.
+- **Pausing:** say "carry off" to pause the mode for this session, and "carry on" to bring it back. If a long session drifts, `/carry:go` re-reads the rules and where every quest stands.
 
 ## Words
 
@@ -182,22 +183,31 @@ add CSV export to holdings, API and web
 
 carry checks every folder you added. A repo that is not set up gets one question: set it up now, or skip it as a reference. It remembers a skip, so you are not asked again. Folders that are not git repos, like specs or docs, are just read.
 
-carry picks the flow, or call one directly:
+You have five slash commands. carry picks the flow for everything else:
 
 ```
-/carry:start     a code change: "fix the CSV export totals", "add a status filter to orders"
-/carry:run       anything else: "why did yesterday's import fail", "reseed staging"
-/carry:diagnose  trace something broken to its cause
-/carry:mode      re-enter carry mode: re-reads the rules and where every quest stands
+/carry:go           anything: "fix the CSV export totals", "why did yesterday's import fail", "reseed staging"
+/carry:setup          set up or refresh one repo (carry offers it when a code change needs it)
+/carry:checkin        where every quest stands: done, running with a time estimate, left, blocked, you
+/carry:pass-the-ball  hand this session to a new one; run it again in the new session to pick it up
+/carry:sweep          clean the codebase: PII and secrets, comments, tests that pin business logic, stray files. Reports first; you pick what goes
 ```
+
+Screen checks default to repeatable scripts on a small harness in `.carry/ui/`. A plan can choose `ui: agent` instead: no scripts, the agent drives its own browser tool and judges the screenshots. Set a repo's default with `ui_driver` in `repo.toml`.
+
+Questions, scripts and deploys work in any folder: a plain folder, a folder of repos, or a git repo with no setup. Only a code change needs a set-up repo, because it gets its own worktree and branch.
 
 What you do along the way: confirm main quest plans, review the result and the calls made, merge the PRs. To see where everything stands, or to resume after a break:
 
 ```
 carry status            this repo's open quests, the linked ones in other repos, and what they need from you
 carry status <slug>     one quest's next step
-carry status --line     the one-liner the agent sees each turn
+carry review <slug>     bring a quest up to try it, plus the diff
+carry tidy [--yes]      clean merged quests here; --yes also cleans leftovers in your other clones
+carry doctor            tools, config, the base branch on the remote, the UI harness
 ```
+
+`carry help` lists only these. `carry help --all` adds the plumbing carry's agents use, and `carry <command> --help` explains one.
 
 In a new session, "continue" is enough: the session starts with the open quests listed.
 
@@ -242,17 +252,20 @@ model = "sonnet"
 
 ```
 skills/
-  mode/            entry: routing, house rules, where you decide
+  go/              entry: routing, house rules, where you decide
     templates/     main-quest, side-quest, build-report, verify-report,
-                   review, pr, rules, machine.example.toml, repo.example.toml
+                   review, pr, rules, machine.example.toml, repo.example.toml,
+                   ui/ (the Playwright harness setup copies into .carry/ui/)
   start/           flow: every code change
   run/             flow: everything else
   diagnose/        trace a problem to its cause
   setup/           one repo's config and rules
   build/           carry as orchestrator: builders, verifiers, the review
   checkin/         a progress check-in in a fixed shape
+  pass-the-ball/   hand a session to the next one
+  sweep/           owner-run codebase cleanup
   verify/          the independent verifier
-agents/            builder, verifier, checker
+agents/            builder, verifier, plan-reviewer, checker
 hooks/             session-start, prompt-status (the per-turn status line), commit-guard
 bin/carry          the CLI the agents use
 ```

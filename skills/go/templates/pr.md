@@ -8,7 +8,11 @@ TODO the problem and the approach, 1 to 3 short sentences.
 - TODO what this covers, and what it leaves out on purpose.
 
 ## Blast radius
-TODO who or what it touches, and why that is safe or risky.
+- Files: TODO linked, only the ones that carry the change.
+- Endpoints: TODO method and path, added or changed. Or none.
+- Migrations: TODO linked, with what they change. Or none.
+- Env vars: TODO name, added or changed. Or none.
+- TODO one line: why that is safe, or what to watch.
 
 ## Verification
 - TODO each real run and its outcome: the check, the live boxes, what the owner reviewed.

@@ -1,6 +1,6 @@
 ---
-name: mode
-description: carry mode, the product-engineering workflow for a git repo with a .carry/ folder, alone or linked to other repos. Classifies a request, routes it to the start or run flow, and holds the house rules and the points where the owner decides. Use for /carry:mode, to re-enter carry mode, or any request to plan, build, change, fix, deploy, run or check something in such a repo.
+name: go
+description: carry mode, the product-engineering workflow for any folder: a repo with a .carry/ folder, alone or linked to other repos, a folder of repos, or a plain folder for questions and runs. Classifies a request, routes it to the start or run flow, and holds the house rules and the points where the owner decides. Use for /carry:go, to re-enter carry mode, or any request to plan, build, change, fix, deploy, run or check something in such a repo.
 ---
 
 # carry mode
@@ -15,16 +15,20 @@ A carry session is either planning or questing. The `carry · ...` status line t
 - **Questing:** a quest is approved. Drive it through build, verify and review without asking, and stop only where the owner decides (below).
 - **Banners:** a `carry` command that moves a quest prints a line starting with `──`. Start your reply with that line, word for word.
 - **The owner cuts in** while a quest is building: their message is the instruction and the approval. Fold it in or restart, per the build skill, and say which in the banner. Never ask whether to.
-- The owner says "carry off" -> the state line stops for this session; "carry on" brings it back. `/carry:mode` re-reads this file and the state, for when a long session has drifted.
+- The owner says "carry off" -> the state line stops for this session; "carry on" brings it back. `/carry:go` re-reads this file and the state, for when a long session has drifted.
 
 ## Start
 
-1. `carry where`. This repo is not set up -> offer the **setup** skill (`../setup/SKILL.md`) for it, then continue with the request.
+1. `carry where`. It says what this folder is:
+   - `repo=<name>` -> a set-up repo. Continue.
+   - `folder=not-git` -> no repo here. A question, script or deploy (the run flow) works as it is: read the folder, no setup, no `git init`. A code change -> ask which repo it belongs in, never turn this folder into one.
+   - `folder=workspace` -> a folder of repos. The `child=` lines list them. Work in the child the request is about; a code change opens its quest there. A child that is `new` -> offer setup for it only when the change needs to write there.
+   - `folder=git` -> a git repo with no `.carry/`. The run flow works without setup. Offer the **setup** skill (`../setup/SKILL.md`) only for a code change, then continue.
 2. Other folders in this session (added directories): `carry scan <dir> [dir...]`. For each `new` repo, ask the owner once, in one message for all of them: set it up now, or skip it as a reference.
    - Set up -> the **setup** skill for that repo.
    - Skip -> `carry skip <dir>`. It is never offered again.
    - `skipped` and `not-git` folders are references: read them, never write there.
-3. Read this repo's rules file (`rules=` from `carry where`). Before writing in another repo, read that repo's rules file too. None yet -> the **setup** skill for it first.
+3. Read this repo's rules file (`rules=` from `carry where`). Before writing in another repo, read that repo's rules file too. None yet -> the **setup** skill for it before a code change; a question or run goes ahead without it.
 4. Resuming? `carry status` lists this repo's quests and the linked ones in other repos; `carry status <slug>` prints the next step from the files on disk. Never redo a round that already has a report.
 5. Route the request with the table below. State the flow, type and weight in one line, with the reason.
 6. Open a todo list whose first items are that flow's steps, copied verbatim. A skipped step stays as `skip: <reason>`.
@@ -56,7 +60,17 @@ A quest is a **main quest** when any is true. Otherwise it is a **side quest**. 
 
 ## Skills
 
-The owner can call mode, start, run, diagnose and setup as `/carry:<name>`. Build and verify are internal: only the start flow and build launch them.
+The owner has five slash commands. Everything else is internal: reached through routing, never typed. Sweep runs only when the owner types it; never start it yourself.
+
+| Command | For the owner |
+|---|---|
+| `/carry:go` | any request. It routes to the right flow below |
+| `/carry:setup` | set up or refresh one repo. Usually offered, rarely typed |
+| `/carry:checkin` | where every quest stands, with time estimates |
+| `/carry:pass-the-ball` | hand this session to a new one, or pick up a handoff |
+| `/carry:sweep` | clean the codebase: PII and secrets, comments, tests that pin business logic, stray files. Reports first, changes only what the owner picks |
+
+Internal skills:
 
 | Skill | What it does | Called by |
 |---|---|---|
@@ -110,5 +124,7 @@ Every call lands in the quest's `## Calls` section through `carry log`:
 - Line 1: a TLDR. What got done, or anything critical.
 - Then what the owner needs to know, and nothing that is already in a file: give the path. More detail only when asked.
 - A question only at a real stop, with a suggested answer. Most replies have none. Act on reversible work and report it.
-- Bullets or a table only for several items. One item is one line. Prose only for an example or analogy, two or three sentences at most.
+- Points by default. A table only to compare several items. Prose only for an example or analogy, two or three sentences at most.
+- The owner learns visually, step by step: show a flow as numbered steps or a small ASCII diagram, not a paragraph.
+- **Notify on stage changes.** When a build finishes, a verdict lands, a quest stops, or review is ready, send the owner a push notification with the banner line, when your harness can send one. They should never have to ask "done?".
 - Last line, whenever a quest is open: the `carry status --line` output, so the owner always sees what is running and where each quest stands.

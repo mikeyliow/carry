@@ -8,7 +8,7 @@ info="$(CARRY_REPO="$START" "$CLI" where 2>/dev/null)" || exit 0
 get() { printf '%s\n' "$info" | sed -n "s/^$1=//p"; }
 
 printf 'carry mode is on: repo %s at %s (owner: %s).\n' "$(get repo)" "$(get root)" "$(get owner)"
-printf 'Read the carry mode skill before any work here: %s. Plan with the owner while no quest is open; once a quest is approved, drive it. Each owner message arrives with a "carry · ..." status line: every open quest, where it stands, what is running.\n' "$(get entry_skill)"
+printf 'Read the carry go skill before any work here: %s. Plan with the owner while no quest is open; once a quest is approved, drive it. Each owner message arrives with a "carry · ..." status line: every open quest, where it stands, what is running.\n' "$(get entry_skill)"
 if [ -f "$(get rules)" ]; then printf 'repo rules: %s - read before touching this repo\n' "$(get rules)"
 else printf 'repo rules: none yet - the setup skill writes them\n'; fi
 printf 'quests: %s\n' "$(get quests)"

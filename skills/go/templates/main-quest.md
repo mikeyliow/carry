@@ -24,6 +24,18 @@ Main quest: an independent verifier runs every **Verify, live** box in its own s
 
 Once building starts, this plan does not change. New work goes in a follow-up quest on the same branch.
 
+## Flow
+
+TODO how this quest runs end to end, as numbered steps or a small diagram. Show what runs in parallel, what waits on what, and where carry hands values across repos. Five to ten lines. Example for a UI quest that uses an API quest:
+
+```
+1. api   build endpoint ─────────────► api sandbox up
+2. ui    build against the Contract (mocked)   ┐ in parallel with 1
+3. carry api verified → hand ui the api branch + {port:api}
+4. ui    switch to the real endpoint ─► verify end to end
+5. you   review both → 2 PRs
+```
+
 ## Checklist
 
 - [ ] The owner confirms this plan.
@@ -64,7 +76,9 @@ TODO every number or view the platform reports from the data this quest touches 
 
 **Verify, live.**
 
-- [ ] L1. TODO given, steps. Pass when TODO, within TODO min.
+- [ ] L1. `api` TODO given, steps. Pass when TODO, within TODO min.
+
+Each live box names its surface first: `api` (curl), `cli`, `component` (the repo's component tests), `browser` (driven per the `ui:` frontmatter: `script` or `agent`) or `sim` (iOS simulator). Pick the cheapest surface that proves the box; `browser` only for a journey across screens or the stack.
 
 **Review gate.**
 
